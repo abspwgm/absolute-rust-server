@@ -137,19 +137,19 @@ cleanup_old_backups() {
 
     # Delete backups older than max_age days
     if [[ "${max_age}" -gt 0 ]]; then
-        find "${BACKUPS_PATH}" -name 'rust_*.zip' -o -name 'rust_*.tar.gz' -mtime "+${max_age}" -delete 2>/dev/null || true
+        find "${BACKUPS_PATH}" \( -name 'rust_*.zip' -o -name 'rust_*.tar.gz' \) -mtime "+${max_age}" -delete 2>/dev/null || true
     fi
 
     # Keep only max_count most recent backups
     if [[ "${max_count}" -gt 0 ]]; then
         local backup_count
-        backup_count=$(find "${BACKUPS_PATH}" -name 'rust_*.zip' -o -name 'rust_*.tar.gz' 2>/dev/null | wc -l)
+        backup_count=$(find "${BACKUPS_PATH}" \( -name 'rust_*.zip' -o -name 'rust_*.tar.gz' \) 2>/dev/null | wc -l)
 
         if [[ "${backup_count}" -gt "${max_count}" ]]; then
             local to_delete=$((backup_count - max_count))
             log_info "Removing ${to_delete} oldest backup(s) to maintain max count of ${max_count}"
 
-            find "${BACKUPS_PATH}" -name 'rust_*.zip' -o -name 'rust_*.tar.gz' -printf '%T+ %p\n' 2>/dev/null \
+            find "${BACKUPS_PATH}" \( -name 'rust_*.zip' -o -name 'rust_*.tar.gz' \) -printf '%T+ %p\n' 2>/dev/null \
                 | sort \
                 | head -n "${to_delete}" \
                 | cut -d' ' -f2- \
