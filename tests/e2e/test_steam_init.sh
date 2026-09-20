@@ -35,21 +35,31 @@ test_steam_init() {
     fi
 
     # --- HOME must point at a directory the server user owns --------------
-    local server_pid
-    server_pid="$(docker exec "${CONTAINER}" pgrep -f RustDedicated 2>/dev/null | head -1 | tr -d '\r')"
-    if [[ -z "${server_pid}" ]]; then
-        log_error "RustDedicated is not running, so its environment cannot be checked"
+    # Reading the running process's /proc/<pid>/environ would be the direct
+    # check, but it needs PTRACE_MODE_READ and Docker drops CAP_SYS_PTRACE from
+    # its default capability set, so even root inside the container gets
+    # "Permission denied" and this assertion fails on a true statement.
+    #
+    # Assert the configuration that sets HOME instead. The outcome it produces
+    # is covered below: if HOME were wrong, Steam init would fail and the
+    # watchdog would be restarting the server, and both are asserted.
+    local rust_conf="/etc/supervisor/conf.d/rust.conf"
+
+    if docker exec "${CONTAINER}" grep -qE '^user=rust$' "${rust_conf}" 2>/dev/null; then
+        log_success "supervisor runs the server as the rust user"
+    else
+        log_error "supervisor does not run the server as the rust user"
+        docker exec "${CONTAINER}" grep -E '^(user|environment)=' "${rust_conf}" 2>&1 || true
         log_test_fail "${TEST_NAME}"
         return 1
     fi
 
-    if docker exec "${CONTAINER}" bash -c \
-        "tr '\\0' '\\n' < /proc/${server_pid}/environ | grep -qx 'HOME=/home/rust'" 2>/dev/null; then
-        log_success "The server process runs with HOME=/home/rust"
+    if docker exec "${CONTAINER}" grep -qE '^environment=.*HOME="?/home/rust"?' "${rust_conf}" 2>/dev/null; then
+        log_success "supervisor gives the server HOME=/home/rust"
     else
-        log_error "The server process does not have HOME=/home/rust"
-        docker exec "${CONTAINER}" bash -c \
-            "tr '\\0' '\\n' < /proc/${server_pid}/environ | grep '^HOME='" 2>&1 || true
+        log_error "supervisor does not set HOME=/home/rust for the server"
+        log_error "Without it the server inherits supervisord's /root and cannot read steamclient.so (#14)"
+        docker exec "${CONTAINER}" grep -E '^(user|environment)=' "${rust_conf}" 2>&1 || true
         log_test_fail "${TEST_NAME}"
         return 1
     fi
