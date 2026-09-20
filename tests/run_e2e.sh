@@ -152,6 +152,7 @@ main() {
     # Run tests
     local tests=(
         "server_start"
+        "rcon_default"
         "server_query"
         "backup"
         "graceful_shutdown"

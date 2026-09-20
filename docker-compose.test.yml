@@ -35,8 +35,10 @@ services:
       - SERVER_LEVEL=Procedural Map
       - SERVER_SAVEINTERVAL=300
 
-      # RCON disabled for simpler testing
-      - RCON_ENABLED=false
+      # RCON enabled with a known default password on purpose:
+      # test_rcon_default.sh asserts it is replaced by a generated one
+      - RCON_ENABLED=true
+      - RCON_PASSWORD=changeme
 
       # No Oxide for faster tests
       - ENABLE_OXIDE=false
