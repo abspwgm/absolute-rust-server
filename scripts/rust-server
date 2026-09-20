@@ -3,8 +3,9 @@
 # Rust Server - Start, stop, and manage the Rust dedicated server
 # =============================================================================
 
-# Source common functions
-source /opt/rust/scripts/common
+# Source common functions. Overridable so the unit tests can source this file
+# outside a container, as the Palworld image's scripts already do.
+source "${RUST_SCRIPTS_PATH:-/opt/rust/scripts}/common"
 
 # -----------------------------------------------------------------------------
 # Build server arguments
@@ -125,11 +126,13 @@ stop_server() {
     log_info "Sending SIGINT to server (PID: ${pid}) for graceful shutdown"
     kill -SIGINT "${pid}" 2>/dev/null || true
 
-    # Wait for graceful shutdown (up to 120 seconds for world save)
-    local timeout=120
+    # How long to let the server save before forcing it. This is the innermost
+    # rung of a ladder that must stay ordered, or the save is cut short (#5):
+    #   this timeout  <  supervisor stopwaitsecs  <  compose stop_grace_period
+    local timeout="${SHUTDOWN_TIMEOUT:-120}"
     local elapsed=0
 
-    while kill -0 "${pid}" 2>/dev/null; do
+    while process_alive "${pid}"; do
         if [[ ${elapsed} -ge ${timeout} ]]; then
             log_warn "Graceful shutdown timed out, sending SIGKILL"
             kill -9 "${pid}" 2>/dev/null || true
@@ -179,8 +182,21 @@ status_server() {
 # -----------------------------------------------------------------------------
 # Main entry point
 # -----------------------------------------------------------------------------
+# supervisor sends stopsignal=INT to *this wrapper*, not to RustDedicated, and it
+# does not set stopasgroup, so the game process gets no signal of its own. With no
+# handler here bash simply terminated: the server was orphaned, never asked to
+# save, and docker's SIGKILL took it seconds later. Run 35512120872 shows the
+# result -- the server log stops with no save and the container exits 137 (#5).
+on_shutdown() {
+    log_info "Shutdown signal received; stopping the server"
+    stop_server
+    exit 0
+}
+
+main() {
 case "${1:-start}" in
     start)
+        trap on_shutdown SIGINT SIGTERM
         start_server
         # Keep the script running for supervisor
         while true; do
@@ -216,3 +232,10 @@ case "${1:-start}" in
         exit 1
         ;;
 esac
+}
+
+# Run main only when executed, so tests can source this file and call
+# stop_server directly. Sourcing it used to start a server and never return.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi
