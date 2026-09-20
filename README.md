@@ -67,13 +67,12 @@ The first start downloads the Rust server files (allow 10GB+ of disk), which can
 docker run -d \
   --name rust-server \
   -p 28015:28015/udp \
-  -p 28016:28016/tcp \
-  -p 28017:28017/tcp \
   -p 27015:27015/udp \
+  -p 127.0.0.1:28016:28016/tcp \
+  -p 127.0.0.1:28017:28017/tcp \
   -v rust-server:/opt/rust/server \
   -v rust-config:/config \
   -e SERVER_NAME="My Rust Server" \
-  -e RCON_PASSWORD="your_secure_password" \
   -e ENABLE_OXIDE=true \
   ghcr.io/abspwgm/absolute-rust-server:latest
 ```
@@ -83,9 +82,9 @@ docker run -d \
 | Port | Protocol | Description |
 |------|----------|-------------|
 | 28015 | UDP | Game port (player connections) |
-| 28016 | TCP | RCON port |
-| 28017 | TCP | WebRCON port |
-| 27015 | UDP | Steam query port |
+| 27015 | UDP | Steam query port (server list) |
+| 28016 | TCP | RCON port (admin, bound to localhost by default) |
+| 28017 | TCP | WebRCON port (admin, bound to localhost by default) |
 
 ## Environment Variables
 
@@ -111,7 +110,7 @@ docker run -d \
 |----------|---------|-------------|
 | `RCON_ENABLED` | `true` | Enable RCON |
 | `RCON_PORT` | `28016` | RCON port |
-| `RCON_PASSWORD` | Empty | RCON password (required for RCON) |
+| `RCON_PASSWORD` | Empty | RCON password (empty or a known default = one is generated, see [RCON Access](#rcon-access)) |
 | `RCON_WEB` | `true` | Enable WebRCON |
 | `RCON_WEB_PORT` | `28017` | WebRCON port |
 
@@ -213,13 +212,39 @@ Backups are stored in `/config/backups/` with timestamps:
 
 ## RCON Access
 
+RCON is a remote admin console: anyone who can reach it with the password controls the server. Two defaults keep it safe.
+
+### RCON Password
+
+If RCON is enabled and `RCON_PASSWORD` is empty or a known default (`changeme`, `password`, `your_secure_password`, `admin`, `rcon`), the container generates a strong random password on start and saves it to `/config/rcon_password` (mode 600, owned by the server user). The value is never written to the logs. Read it with:
+
+```bash
+docker exec rust-server cat /config/rcon_password
+```
+
+The generated password is kept across restarts. To choose your own, set `RCON_PASSWORD` to anything not on the list above; it is used unchanged and no file is written. With the repository's `docker-compose.yml` you can do that without editing the file:
+
+```bash
+RCON_PASSWORD='something-long-and-unique' docker compose up -d
+```
+
+### RCON Ports
+
+`docker-compose.yml` binds RCON (28016/tcp) and WebRCON (28017/tcp) to `127.0.0.1`, so they are only reachable from the Docker host. The game (28015/udp) and query (27015/udp) ports stay public. To administer the server from another machine, prefer an SSH tunnel over exposing the ports:
+
+```bash
+ssh -L 28016:127.0.0.1:28016 user@your-server
+```
+
+Only change the bindings to `28016:28016/tcp` if you have set a strong password and restricted access with a firewall. Never forward these ports on your router.
+
 ### Using RCON Client
 
-Connect to `your-server:28016` with your RCON password.
+Connect to `localhost:28016` on the Docker host (or through the tunnel) with your RCON password.
 
 ### WebRCON
 
-Access WebRCON at `http://your-server:28017` (if enabled).
+WebRCON listens on port `28017` (if enabled); point a WebRCON client at `localhost:28017`.
 
 ### Common RCON Commands
 
@@ -243,7 +268,7 @@ oxide.reload *      # Reload all plugins
 
 ### Can't Connect to Server
 
-1. Verify ports are forwarded: 28015/udp, 28016/tcp
+1. Verify ports are forwarded: 28015/udp, 27015/udp (RCON ports should not be forwarded)
 2. Check firewall rules
 3. Verify server is fully started (check logs for "Server startup complete")
 

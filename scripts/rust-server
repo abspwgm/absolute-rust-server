@@ -69,11 +69,19 @@ start_server() {
         return 1
     fi
 
+    # Resolve RCON password (sets RCON_PASSWORD, must not be captured)
+    resolve_rcon_password || true
+
     # Build arguments
     local args
     args=$(build_server_args)
 
-    log_info "Server arguments: ${args}"
+    # Never log the RCON password
+    if [[ -n "${RCON_PASSWORD}" ]]; then
+        log_info "Server arguments: ${args//"${RCON_PASSWORD}"/********}"
+    else
+        log_info "Server arguments: ${args}"
+    fi
 
     # Change to server directory
     cd "${RUST_SERVER_PATH}"

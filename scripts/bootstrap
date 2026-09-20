@@ -44,6 +44,12 @@ mkdir -p "${SERVER_DATA_PATH}/cfg"
 mkdir -p "${SERVER_DATA_PATH}/storage"
 
 # -----------------------------------------------------------------------------
+# Resolve RCON password (replaces empty/known-default passwords)
+# Sets RCON_PASSWORD directly - do not capture, it logs to stdout
+# -----------------------------------------------------------------------------
+resolve_rcon_password || true
+
+# -----------------------------------------------------------------------------
 # Run update on start if enabled
 # -----------------------------------------------------------------------------
 if is_update_on_start_enabled; then

@@ -44,6 +44,7 @@ LOG_PATH="/var/log/rust"
 PID_PATH="/var/run/rust"
 
 RUST_SERVER_PID="${PID_PATH}/rust-server.pid"
+RCON_PASSWORD_FILE="${CONFIG_PATH}/rcon_password"
 RUST_APP_ID="258550"
 
 # -----------------------------------------------------------------------------
@@ -125,6 +126,78 @@ is_oxide_auto_update_enabled() {
 
 is_backups_enabled() {
     [[ "${BACKUPS_ENABLED,,}" == "true" ]]
+}
+
+# -----------------------------------------------------------------------------
+# RCON password helpers
+# -----------------------------------------------------------------------------
+# Known default passwords that must never protect a remote console
+RCON_PASSWORD_DENYLIST=("changeme" "password" "your_secure_password" "admin" "rcon")
+
+is_default_rcon_password() {
+    local candidate="${1,,}"
+    local denied
+
+    if [[ -z "${candidate}" ]]; then
+        return 0
+    fi
+    for denied in "${RCON_PASSWORD_DENYLIST[@]}"; do
+        if [[ "${candidate}" == "${denied}" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Decides the RCON password and stores it in the global RCON_PASSWORD.
+# An empty or known-default password is replaced by a random one saved to
+# ${RCON_PASSWORD_FILE}; the value itself is never logged.
+# Note: this logs to stdout, so never call it via $(...) - read RCON_PASSWORD
+resolve_rcon_password() {
+    if ! is_rcon_enabled; then
+        return 0
+    fi
+
+    # User-supplied password: use unchanged
+    if ! is_default_rcon_password "${RCON_PASSWORD}"; then
+        return 0
+    fi
+
+    # Reuse the password generated on a previous start
+    local stored=""
+    if [[ -r "${RCON_PASSWORD_FILE}" ]]; then
+        stored=$(tr -d '\r\n' < "${RCON_PASSWORD_FILE}")
+    fi
+    if [[ ${#stored} -ge 24 ]]; then
+        RCON_PASSWORD="${stored}"
+        log_info "Using generated RCON password from ${RCON_PASSWORD_FILE}"
+        return 0
+    fi
+
+    log_warn "RCON_PASSWORD is empty or a known default, generating a random one"
+
+    # Alphanumeric only, so it is safe on the server command line
+    local generated
+    generated=$(head -c 64 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)
+    if [[ ${#generated} -lt 24 ]]; then
+        log_error "Failed to generate an RCON password, disabling RCON"
+        RCON_ENABLED=false
+        return 1
+    fi
+
+    # Write with mode 600, owned by the server user
+    if ! (umask 077 && echo "${generated}" > "${RCON_PASSWORD_FILE}"); then
+        log_error "Failed to write ${RCON_PASSWORD_FILE}, disabling RCON"
+        RCON_ENABLED=false
+        return 1
+    fi
+    chmod 600 "${RCON_PASSWORD_FILE}"
+    chown rust:rust "${RCON_PASSWORD_FILE}" 2>/dev/null || true
+
+    RCON_PASSWORD="${generated}"
+    log_success "Generated RCON password saved to ${RCON_PASSWORD_FILE}"
+    log_info "Read it with: docker exec <container> cat ${RCON_PASSWORD_FILE}"
+    return 0
 }
 
 # -----------------------------------------------------------------------------
@@ -296,6 +369,8 @@ rcon.web $(is_rcon_web_enabled && echo "1" || echo "0")
 EOF
     fi
 
+    # server.cfg holds the RCON password, keep it private to the server user
+    chmod 600 "${cfg_file}" 2>/dev/null || true
     chown rust:rust "${cfg_file}" 2>/dev/null || true
     log_success "server.cfg generated at ${cfg_file}"
 }
