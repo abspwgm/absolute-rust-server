@@ -85,10 +85,21 @@ assert_container_running() {
     fi
 }
 
+# How often the wait_* helpers poll. Overridable so unit tests need no real time.
+E2E_POLL_INTERVAL="${E2E_POLL_INTERVAL:-5}"
+
+# The one place that asks a container whether a process is up. Every process
+# check goes through here so the polling logic above it can be unit tested.
+process_is_running() {
+    local container="$1"
+    local process="$2"
+    MSYS_NO_PATHCONV=1 docker exec "${container}" pgrep -f "${process}" > /dev/null 2>&1
+}
+
 assert_process_running() {
     local container="$1"
     local process="$2"
-    if MSYS_NO_PATHCONV=1 docker exec "${container}" pgrep -f "${process}" > /dev/null 2>&1; then
+    if process_is_running "${container}" "${process}"; then
         log_info "Process '${process}' is running"
         return 0
     else
@@ -202,12 +213,106 @@ wait_for_process() {
     local elapsed=0
 
     while [[ ${elapsed} -lt ${timeout} ]]; do
-        if MSYS_NO_PATHCONV=1 docker exec "${container}" pgrep -f "${process}" > /dev/null 2>&1; then
+        if process_is_running "${container}" "${process}"; then
             return 0
         fi
-        sleep 5
+        sleep "${E2E_POLL_INTERVAL}"
         elapsed=$((elapsed + 5))
     done
 
     return 1
+}
+
+# Wait for a process to come up and then stay up continuously for stable_secs.
+#
+# A process that is merely present at one instant proves nothing when supervisor
+# has autorestart=true: RustDedicated can die and be respawned, so a single
+# check passes or fails on timing alone (#2). Requiring an unbroken run makes a
+# crash-restart loop fail deterministically instead.
+wait_for_process_stable() {
+    local container="$1"
+    local process="$2"
+    local timeout="${3:-60}"
+    local stable_secs="${4:-30}"
+    local elapsed=0
+    local stable=0
+
+    while [[ ${elapsed} -lt ${timeout} ]]; do
+        if process_is_running "${container}" "${process}"; then
+            if [[ ${stable} -ge ${stable_secs} ]]; then
+                log_info "Process '${process}' has been up for ${stable}s"
+                return 0
+            fi
+            stable=$((stable + 5))
+        elif [[ ${stable} -gt 0 ]]; then
+            log_warn "Process '${process}' disappeared after ${stable}s: not stable yet"
+            stable=0
+        fi
+        sleep "${E2E_POLL_INTERVAL}"
+        elapsed=$((elapsed + 5))
+    done
+
+    if [[ ${stable} -gt 0 ]]; then
+        log_error "Process '${process}' never stayed up for ${stable_secs}s"
+    else
+        log_error "Process '${process}' never started within ${timeout}s"
+    fi
+    return 1
+}
+
+# -----------------------------------------------------------------------------
+# Diagnostics
+# -----------------------------------------------------------------------------
+# Report what supervisor thinks of the server. When the process check fails,
+# this is what distinguishes "never started" from "crash-restart loop".
+report_supervisor_state() {
+    local container="$1"
+
+    log_info "=== supervisor state ==="
+    docker_exec "${container}" supervisorctl status 2>&1 || true
+    log_info "=== supervisord events (spawned/exited/backoff) ==="
+    docker_exec "${container}" grep -Ei 'spawned|exited|backoff|fatal|stopped' \
+        /var/log/rust/supervisord.log 2>&1 | tail -40 || true
+
+    # The smoking gun for a crash loop. supervisor only manages the
+    # /opt/rust/scripts/rust-server wrapper, which never exits, so supervisor
+    # never reports RustDedicated dying: the wrapper's own 30s watchdog restarts
+    # it and logs "Server process not running, restarting..." to its stdout
+    # logfile -- a file inside the container, never container stdout.
+    log_info "=== wrapper watchdog restarts ==="
+    docker_exec "${container}" grep -c 'Server process not running, restarting' \
+        /var/log/rust/supervisor-rust.log 2>&1 || true
+    docker_exec "${container}" grep -E 'restarting|Server started with PID|Failed to start server' \
+        /var/log/rust/supervisor-rust.log 2>&1 | tail -20 || true
+    log_info "=== server process table ==="
+    docker_exec "${container}" ps -eo pid,ppid,etime,stat,comm,args 2>&1 | tail -30 || true
+    log_info "=== end supervisor state ==="
+}
+
+# Copy the logs that only exist inside the container out to the host.
+#
+# RustDedicated's own output and supervisord's event log live at /var/log/rust
+# (see config/supervisord.conf) and used to die with the container: run_e2e.sh
+# tears it down in its exit trap, before the workflow collects artifacts, so
+# every failure arrived unexplainable (#2). Call this before any teardown.
+export_container_diagnostics() {
+    local container="$1"
+    local dest="$2"
+
+    if ! docker inspect "${container}" > /dev/null 2>&1; then
+        log_warn "Container '${container}' is gone; no in-container logs to collect"
+        return 0
+    fi
+
+    mkdir -p "${dest}"
+    log_info "Collecting in-container logs from ${container}:/var/log/rust"
+    if docker cp "${container}:/var/log/rust/." "${dest}/" 2>/dev/null; then
+        log_pass "In-container logs saved to ${dest}/"
+    else
+        log_warn "Could not copy /var/log/rust from ${container}"
+    fi
+
+    docker inspect "${container}" > "${dest}/container-inspect.json" 2>&1 || true
+    report_supervisor_state "${container}" > "${dest}/supervisor-state.log" 2>&1 || true
+    log_pass "Diagnostics saved to ${dest}/"
 }

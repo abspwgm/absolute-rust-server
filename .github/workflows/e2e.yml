@@ -51,6 +51,9 @@ jobs:
       - name: Oxide pin unit test
         run: bash tests/test_oxide_pin.sh
 
+      - name: E2E helper unit test
+        run: bash tests/test_e2e_helpers.sh
+
   e2e-tests:
     name: End-to-End Tests
     runs-on: ubuntu-latest
