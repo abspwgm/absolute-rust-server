@@ -140,6 +140,11 @@ main() {
     if run_update; then
         log_success "Update process completed"
 
+        # SteamCMD refreshes steamclient.so along with its client, and its copy
+        # lands under /root where the server user cannot read it, so refresh the
+        # server's copy before restarting into it (#14).
+        install_steam_sdk || log_warn "Could not refresh the server's Steam SDK copy"
+
         # Restart server if it was running
         if [[ "${was_running}" == "true" ]]; then
             log_info "Restarting server after update"
