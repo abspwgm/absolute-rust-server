@@ -84,7 +84,7 @@ test_server_query() {
 
     if [[ ${ports_ok} -eq 1 ]]; then
         # Verify server process is also running
-        if MSYS_NO_PATHCONV=1 docker exec rust-server pgrep -f RustDedicated > /dev/null 2>&1; then
+        if process_is_running "rust-server" "RustDedicated"; then
             log_success "Server process is running and ports are bound"
             log_test_pass "${TEST_NAME}"
             return 0
@@ -98,7 +98,7 @@ test_server_query() {
     # Fallback: If ports aren't detected but process is running
     log_warn "Could not detect ports via /proc/net/udp, checking process and logs"
 
-    if MSYS_NO_PATHCONV=1 docker exec rust-server pgrep -f RustDedicated > /dev/null 2>&1; then
+    if process_is_running "rust-server" "RustDedicated"; then
         if docker logs rust-server 2>&1 | grep -q "Server startup complete"; then
             log_success "Server process is running and initialized"
             log_test_pass "${TEST_NAME}"
@@ -109,6 +109,8 @@ test_server_query() {
     log_error "Server is not listening on expected ports"
     log_error "Expected ports: ${server_port} (game), ${query_port} (query)"
     docker logs rust-server --tail 50 2>&1 || true
+    report_supervisor_state "rust-server"
+    export_container_diagnostics rust-server "${LOGS_DIR:-data/logs}/container"
     log_test_fail "${TEST_NAME}"
     return 1
 }

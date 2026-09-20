@@ -3,15 +3,20 @@
 # Oxide Installer - Downloads and installs Oxide/uMod modding framework
 # =============================================================================
 
-# Source common functions
-source /opt/rust/scripts/common
+# Source common functions (overridable so the pin is unit testable without Docker)
+source "${RUST_SCRIPTS_DIR:-/opt/rust/scripts}/common"
 
 # -----------------------------------------------------------------------------
 # Constants
 # -----------------------------------------------------------------------------
-OXIDE_RELEASE_URL="https://umod.org/games/rust/download"
-OXIDE_BACKUP_URL="https://github.com/OxideMod/Oxide.Rust/releases/latest/download/Oxide.Rust-linux.zip"
-OXIDE_TEMP_DIR="/tmp/oxide_install"
+# Oxide is a mod loader: arbitrary code that runs next to a live world. It is
+# never baked into the image (see the licence rule in the hub's PLAN.md), so it
+# is fetched at run time from a version-pinned URL and verified by sha256 before
+# a single file is extracted. An unpinned or mismatching download is refused.
+OXIDE_VERSION="${OXIDE_VERSION:-}"
+OXIDE_SHA256="${OXIDE_SHA256:-}"
+OXIDE_RELEASE_BASE="${OXIDE_RELEASE_BASE:-https://github.com/OxideMod/Oxide.Rust/releases/download}"
+OXIDE_TEMP_DIR="${OXIDE_TEMP_DIR:-/tmp/oxide_install}"
 OXIDE_DOWNLOAD_FILE="${OXIDE_TEMP_DIR}/Oxide.Rust-linux.zip"
 
 # -----------------------------------------------------------------------------
@@ -52,35 +57,43 @@ done
 # Download Oxide
 # -----------------------------------------------------------------------------
 download_oxide() {
-    log_info "Downloading Oxide/uMod for Rust"
+    if [[ -z "${OXIDE_VERSION}" || -z "${OXIDE_SHA256}" ]]; then
+        log_error "OXIDE_VERSION and OXIDE_SHA256 must both be set"
+        log_error "Refusing to install an unpinned mod loader"
+        return 1
+    fi
 
-    # Create temp directory
+    local url="${OXIDE_RELEASE_BASE}/${OXIDE_VERSION}/Oxide.Rust-linux.zip"
+
     mkdir -p "${OXIDE_TEMP_DIR}"
     rm -f "${OXIDE_DOWNLOAD_FILE}"
 
-    # Try primary download URL
-    log_info "Downloading from: ${OXIDE_RELEASE_URL}"
-    if curl -sL -o "${OXIDE_DOWNLOAD_FILE}" "${OXIDE_RELEASE_URL}" 2>/dev/null; then
-        # Verify it's a valid ZIP file
-        if unzip -t "${OXIDE_DOWNLOAD_FILE}" > /dev/null 2>&1; then
-            log_success "Download successful (primary source)"
-            return 0
-        fi
+    log_info "Downloading Oxide ${OXIDE_VERSION}"
+    log_info "Source: ${url}"
+    if ! curl -fsSL --retry 3 --retry-delay 5 -o "${OXIDE_DOWNLOAD_FILE}" "${url}"; then
+        log_error "Failed to download Oxide ${OXIDE_VERSION} from ${url}"
+        rm -f "${OXIDE_DOWNLOAD_FILE}"
+        return 1
     fi
 
-    # Try backup URL (GitHub releases)
-    log_warn "Primary download failed, trying backup source"
-    log_info "Downloading from: ${OXIDE_BACKUP_URL}"
-    if curl -sL -o "${OXIDE_DOWNLOAD_FILE}" "${OXIDE_BACKUP_URL}" 2>/dev/null; then
-        if unzip -t "${OXIDE_DOWNLOAD_FILE}" > /dev/null 2>&1; then
-            log_success "Download successful (backup source)"
-            return 0
-        fi
+    local actual
+    actual=$(sha256sum "${OXIDE_DOWNLOAD_FILE}" | cut -d' ' -f1)
+    if [[ "${actual}" != "${OXIDE_SHA256}" ]]; then
+        log_error "Oxide ${OXIDE_VERSION} checksum mismatch, refusing to install"
+        log_error "  expected: ${OXIDE_SHA256}"
+        log_error "  actual:   ${actual}"
+        rm -rf "${OXIDE_TEMP_DIR}"
+        return 1
     fi
 
-    log_error "Failed to download Oxide from all sources"
-    rm -f "${OXIDE_DOWNLOAD_FILE}"
-    return 1
+    if ! unzip -t "${OXIDE_DOWNLOAD_FILE}" > /dev/null 2>&1; then
+        log_error "Oxide ${OXIDE_VERSION} passed its checksum but is not a valid ZIP"
+        rm -rf "${OXIDE_TEMP_DIR}"
+        return 1
+    fi
+
+    log_success "Downloaded and verified Oxide ${OXIDE_VERSION}"
+    return 0
 }
 
 # -----------------------------------------------------------------------------
@@ -122,6 +135,11 @@ install_oxide() {
         return 1
     fi
 
+    # Record which pinned version is on disk, so check-update is a version
+    # comparison instead of a blind reinstall on every start.
+    mkdir -p "${RUST_SERVER_PATH}/oxide"
+    echo "${OXIDE_VERSION}" > "${RUST_SERVER_PATH}/oxide/.oxide_version"
+
     # Create oxide directories if they don't exist
     mkdir -p "${RUST_SERVER_PATH}/oxide/config"
     mkdir -p "${RUST_SERVER_PATH}/oxide/data"
@@ -159,19 +177,24 @@ check_update() {
         return $?
     fi
 
-    log_info "Checking for Oxide updates"
+    local installed
+    installed=$(get_oxide_version)
 
-    # We don't have a reliable way to check version without downloading
-    # So we just reinstall if auto-update is enabled
-    if is_oxide_auto_update_enabled; then
-        log_info "Auto-update enabled, reinstalling Oxide"
-        FORCE_INSTALL=true
-        install_oxide
-        return $?
-    else
-        log_info "Auto-update disabled, skipping"
+    if [[ "${installed}" == "${OXIDE_VERSION}" ]]; then
+        log_info "Oxide ${installed} matches the pinned version, nothing to do"
         return 0
     fi
+
+    if ! is_oxide_auto_update_enabled; then
+        log_warn "Installed Oxide (${installed}) differs from the pinned ${OXIDE_VERSION}"
+        log_warn "OXIDE_AUTO_UPDATE is false, leaving it alone"
+        return 0
+    fi
+
+    log_info "Oxide ${installed} -> ${OXIDE_VERSION} (pinned)"
+    FORCE_INSTALL=true
+    install_oxide
+    return $?
 }
 
 # -----------------------------------------------------------------------------

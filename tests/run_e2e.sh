@@ -52,6 +52,8 @@ export_container_logs() {
 cleanup() {
     log_info "Cleaning up test environment"
     export_container_logs "$(date '+%Y%m%d_%H%M%S')_cleanup_final"
+    # Must precede teardown: /var/log/rust only exists inside the container.
+    export_container_diagnostics rust-server "${LOGS_DIR}/container"
     docker compose -f "${PROJECT_DIR}/docker-compose.test.yml" down -v 2>/dev/null || true
     docker rm -f rust-server 2>/dev/null || true
     docker volume rm rust-test-config rust-test-server 2>/dev/null || true
@@ -152,6 +154,8 @@ main() {
     # Run tests
     local tests=(
         "server_start"
+        "steam_init"
+        "rcon_default"
         "server_query"
         "backup"
         "graceful_shutdown"
