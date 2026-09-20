@@ -11,6 +11,10 @@ services:
       dockerfile: Dockerfile
     image: absolute-rust-server:test
     container_name: rust-server
+    # Must exceed supervisor stopwaitsecs (150s), which must exceed the server's
+    # own save wait (120s). Without this docker stop killed the server after
+    # 10s and the world save was lost (#5).
+    stop_grace_period: 180s
 
     # Ports
     ports:
