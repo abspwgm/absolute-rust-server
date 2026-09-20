@@ -260,6 +260,37 @@ wait_for_process_stable() {
     return 1
 }
 
+# How many times the wrapper's watchdog has restarted the server.
+#
+# This is the only deterministic crash-loop signal available. A stability window
+# cannot prove "never crashes": run 35508220541 crash-looped every 35s while
+# still satisfying a 60s window, because the crash took ~67s. Every restart is
+# logged by scripts/rust-server to its supervisor stdout logfile.
+watchdog_restart_count() {
+    local container="$1"
+    local count
+    count="$(docker_exec "${container}" grep -c 'Server process not running, restarting' \
+        /var/log/rust/supervisor-rust.log 2>/dev/null | tr -d '\r')"
+    # grep -c exits non-zero with no matches, and the file may not exist yet.
+    [[ "${count}" =~ ^[0-9]+$ ]] || count=0
+    echo "${count}"
+}
+
+# Fail if the server has been restarted behind our back.
+assert_no_watchdog_restarts() {
+    local container="$1"
+    local count
+    count="$(watchdog_restart_count "${container}")"
+
+    if [[ "${count}" -eq 0 ]]; then
+        log_info "No watchdog restarts: the server has not crashed"
+        return 0
+    fi
+
+    log_error "The server has been restarted ${count} time(s) by the watchdog: it is crash-looping"
+    return 1
+}
+
 # -----------------------------------------------------------------------------
 # Diagnostics
 # -----------------------------------------------------------------------------

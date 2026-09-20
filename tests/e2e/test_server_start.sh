@@ -99,6 +99,16 @@ test_server_start() {
     fi
     log_success "Server process has been up continuously"
 
+    # Uptime alone is not enough: a server that crashes after the window closes
+    # still satisfies it (#14 crash-looped every 35s past a 60s window). The
+    # watchdog's own restart log is the deterministic signal.
+    if ! assert_no_watchdog_restarts "rust-server"; then
+        report_supervisor_state "rust-server"
+        export_container_diagnostics rust-server "${LOGS_DIR:-data/logs}/container"
+        log_test_fail "${TEST_NAME}"
+        return 1
+    fi
+
     # Supplementary: which startup message the server got to, for the log only.
     if wait_for_log "rust-server" "Server startup complete" 60; then
         log_info "Startup message found: 'Server startup complete'"

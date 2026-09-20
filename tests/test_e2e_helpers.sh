@@ -83,6 +83,43 @@ else
     fail "expected rc=0 when the process was stable across the window, got rc=${RC}"
 fi
 
+# --- crash-loop detection via the watchdog's restart log -------------------
+# docker_exec is the only seam these touch, so fake what grep -c would print.
+FAKE_GREP_OUT=""
+FAKE_GREP_RC=0
+docker_exec() { printf '%s' "${FAKE_GREP_OUT}"; return "${FAKE_GREP_RC}"; }
+
+FAKE_GREP_OUT="0"; FAKE_GREP_RC=1   # grep -c exits 1 when it counts zero
+if assert_no_watchdog_restarts "fake" > /dev/null 2>&1; then
+    pass "zero watchdog restarts passes"
+else
+    fail "zero watchdog restarts should pass"
+fi
+
+FAKE_GREP_OUT="58"; FAKE_GREP_RC=0
+if assert_no_watchdog_restarts "fake" > /dev/null 2>&1; then
+    fail "a crash-looping server must not pass"
+else
+    pass "a crash-looping server fails (the #14 signature)"
+fi
+
+FAKE_GREP_OUT="1"; FAKE_GREP_RC=0
+if assert_no_watchdog_restarts "fake" > /dev/null 2>&1; then
+    fail "even a single restart must not pass"
+else
+    pass "even a single restart fails"
+fi
+
+# The log file may not exist yet on a container that just booted: treat an
+# unusable answer as "no restarts seen" rather than erroring the suite.
+FAKE_GREP_OUT="grep: /var/log/rust/supervisor-rust.log: No such file or directory"
+FAKE_GREP_RC=2
+if assert_no_watchdog_restarts "fake" > /dev/null 2>&1; then
+    pass "a missing watchdog log is treated as no restarts, not an error"
+else
+    fail "a missing watchdog log should not fail the check"
+fi
+
 echo
 if [[ ${failures} -eq 0 ]]; then
     echo "All e2e helper checks passed"
