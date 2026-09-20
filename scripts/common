@@ -44,7 +44,7 @@ SETTINGS_PATH="${CONFIG_PATH}/settings"
 BACKUPS_PATH="${CONFIG_PATH}/backups"
 OXIDE_PATH="${CONFIG_PATH}/oxide"
 LOG_PATH="/var/log/rust"
-PID_PATH="/var/run/rust"
+PID_PATH="${TEST_ROOT}/var/run/rust"
 
 RUST_SERVER_PID="${PID_PATH}/rust-server.pid"
 
@@ -213,6 +213,18 @@ resolve_rcon_password() {
 # -----------------------------------------------------------------------------
 # Process helpers
 # -----------------------------------------------------------------------------
+# True while a pid is a live process. A process that has exited but has not yet
+# been reaped is still a valid pid and still answers kill -0, so a wait loop
+# built on kill -0 alone can hang on a zombie forever.
+process_alive() {
+    local pid="$1"
+    [[ -n "${pid}" ]] || return 1
+    kill -0 "${pid}" 2>/dev/null || return 1
+    local state
+    state="$(awk '{print $3}' "/proc/${pid}/stat" 2>/dev/null)"
+    [[ "${state}" != "Z" ]]
+}
+
 is_server_running() {
     if [[ -f "${RUST_SERVER_PID}" ]]; then
         local pid

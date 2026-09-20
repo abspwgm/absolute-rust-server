@@ -33,36 +33,73 @@ test_graceful_shutdown() {
     assert_process_running "rust-server" "RustDedicated"
 
     # Send graceful shutdown signal (SIGINT to container)
+    # Count the saves already in the log, so we can require a NEW one. The old
+    # assertion grepped docker logs for "saving|shutdown|stopping|SIGINT|
+    # terminated", which matches supervisor's own chatter: it passed even while
+    # the server was crash-looping and never saving a thing (#5, #14).
+    local saves_before
+    saves_before="$(docker logs rust-server 2>&1 | grep -c "Saving World" || true)"
+    [[ "${saves_before}" =~ ^[0-9]+$ ]] || saves_before=0
+    log_info "Saves in the log before shutdown: ${saves_before}"
+
     log_info "Sending graceful shutdown signal (SIGINT)"
     docker kill --signal=INT rust-server || true
 
-    # Wait for graceful shutdown sequence in logs
-    log_info "Waiting for graceful shutdown sequence in logs"
-    sleep 10
+    # Wait for the container to exit of its own accord. The budget has to exceed
+    # the shutdown ladder: the server may take up to 120s to save, supervisor
+    # waits 150s, and compose allows 180s.
+    log_info "Waiting for the server to save and the container to exit"
+    local waited=0
+    while [[ "$(docker inspect -f '{{.State.Running}}' rust-server 2>/dev/null)" == "true" ]]; do
+        if [[ ${waited} -ge 200 ]]; then
+            log_error "Container still running ${waited}s after SIGINT"
+            break
+        fi
+        sleep 5
+        waited=$((waited + 5))
+    done
 
-    # Check for shutdown-related messages in logs
-    if docker logs rust-server 2>&1 | grep -qiE "saving|shutdown|stopping|SIGINT|terminated"; then
-        log_info "Process stop/termination detected in logs"
-        log_pass "Graceful shutdown sequence observed in logs"
-    else
-        log_warn "No explicit shutdown message found, but this may be normal"
+    # A graceful stop must not look like a kill. 137 is SIGKILL, which is what
+    # happened before the ladder was aligned.
+    local exit_code
+    exit_code="$(docker inspect -f '{{.State.ExitCode}}' rust-server 2>/dev/null)"
+    log_info "Container exited after ${waited}s with code ${exit_code}"
+    if [[ "${exit_code}" == "137" ]]; then
+        log_error "Container was SIGKILLed (137): the save window was cut short"
+        log_test_fail "${TEST_NAME}"
+        return 1
     fi
 
-    log_pass "Graceful shutdown verified"
+    # The point of a graceful shutdown: the world was actually written.
+    local saves_after
+    saves_after="$(docker logs rust-server 2>&1 | grep -c "Saving World" || true)"
+    [[ "${saves_after}" =~ ^[0-9]+$ ]] || saves_after=0
 
-    # Restart container for subsequent tests
-    log_info "Ensuring container is running for subsequent tests"
-    log_info "Stopping container with docker stop"
-    docker stop --time 30 rust-server 2>/dev/null || true
+    if [[ "${saves_after}" -gt "${saves_before}" ]]; then
+        log_pass "The server saved the world on shutdown (${saves_before} -> ${saves_after})"
+    else
+        log_error "No new save was written on shutdown (still ${saves_after})"
+        log_error "=== last 40 log lines ==="
+        docker logs rust-server 2>&1 | tail -40 || true
+        log_test_fail "${TEST_NAME}"
+        return 1
+    fi
 
-    cd "$(dirname "${SCRIPT_DIR}")/.."
-    docker compose -f docker-compose.test.yml up -d
+    # --- restart deterministically for the tests that follow ---------------
+    # Previously this ran `docker compose up -d` against a container that was
+    # still exiting; compose reported "Running", did nothing, and the container
+    # never came back, which failed restart_update too.
+    log_info "Restarting the container for subsequent tests"
+    docker start rust-server > /dev/null 2>&1 || {
+        cd "$(dirname "${SCRIPT_DIR}")/.."
+        docker compose -f docker-compose.test.yml up -d
+    }
 
-    # Wait for container to be running
     local attempts=0
-    while [[ $(docker inspect -f '{{.State.Running}}' rust-server 2>/dev/null) != "true" ]]; do
+    while [[ "$(docker inspect -f '{{.State.Running}}' rust-server 2>/dev/null)" != "true" ]]; do
         if [[ ${attempts} -ge 30 ]]; then
             log_error "Container failed to restart after graceful shutdown test"
+            docker logs rust-server 2>&1 | tail -20 || true
             log_test_fail "${TEST_NAME}"
             return 1
         fi
