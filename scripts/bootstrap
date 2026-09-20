@@ -119,6 +119,18 @@ chmod -R u+rwX "${RUST_SERVER_PATH}" 2>/dev/null || true
 chmod +x "${RUST_SERVER_BINARY}" 2>/dev/null || true
 
 # -----------------------------------------------------------------------------
+# Steam SDK for the server user
+# -----------------------------------------------------------------------------
+# Must run after SteamCMD (which leaves its copy under /root, unreadable by the
+# rust user) and before supervisor starts the server. Without this the server
+# cannot initialise Steam and crash-loops (#14).
+if ! install_steam_sdk; then
+    log_error "The server will not be able to register with Steam"
+    log_error "It would start, fail SteamAPI_Init and be restarted repeatedly"
+    exit 1
+fi
+
+# -----------------------------------------------------------------------------
 # Install/Update Oxide if enabled
 # -----------------------------------------------------------------------------
 if is_oxide_enabled; then

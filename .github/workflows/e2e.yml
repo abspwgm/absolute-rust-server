@@ -45,14 +45,14 @@ jobs:
           shellcheck --version
           shellcheck -S error -s bash -x scripts/* tests/*.sh tests/e2e/*.sh
 
-      - name: RCON password unit test
-        run: bash tests/test_rcon_password.sh
-
-      - name: Oxide pin unit test
-        run: bash tests/test_oxide_pin.sh
-
-      - name: E2E helper unit test
-        run: bash tests/test_e2e_helpers.sh
+      - name: Unit tests (no Docker)
+        run: |
+          # tests/test_helpers.sh is the shared e2e library, not a test.
+          for t in tests/test_*.sh; do
+            case "$(basename "${t}")" in test_helpers.sh) continue ;; esac
+            echo "--- ${t}"
+            bash "${t}"
+          done
 
   e2e-tests:
     name: End-to-End Tests

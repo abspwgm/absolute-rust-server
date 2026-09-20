@@ -154,6 +154,7 @@ main() {
     # Run tests
     local tests=(
         "server_start"
+        "steam_init"
         "rcon_default"
         "server_query"
         "backup"
