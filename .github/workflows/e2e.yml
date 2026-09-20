@@ -27,6 +27,15 @@ on:
 permissions:
   contents: read
 
+# The self-hosted pool runs several runner instances on one machine sharing one
+# Docker daemon, and this suite uses fixed container and volume names
+# (rust-server, rust-test-server). Two concurrent runs would tear down each
+# other's resources. Serialised per repository, not per ref, because the
+# collision is over those names rather than over the branch.
+concurrency:
+  group: e2e-${{ github.repository }}
+  cancel-in-progress: false
+
 env:
   RUST_APP_ID: '258550'
 
@@ -59,7 +68,16 @@ jobs:
 
   e2e-tests:
     name: End-to-End Tests
-    runs-on: ubuntu-latest
+    # Fork pull requests NEVER run on our own hardware: a fork can change both
+    # the workflow and the tests it runs, and this runner shares a machine with
+    # live game servers. They go to a GitHub-hosted runner, free for public
+    # repositories. Everything else takes the org pool, which holds the Steam
+    # depot cache - this suite's wall clock is mostly the download.
+    runs-on: ${{ fromJSON(
+      (github.event_name == 'pull_request' &&
+       github.event.pull_request.head.repo.full_name != github.repository)
+      && '["ubuntu-latest"]'
+      || '["self-hosted","linux","x64","absolute-e2e"]') }}
     timeout-minutes: 90
 
     steps:
@@ -80,8 +98,29 @@ jobs:
           mkdir -p data/server
           mkdir -p data/config
 
+      # On the self-hosted pool the depot cache is already on local disk, kept
+      # current by a root-owned timer that no pull request can influence.
+      # Copying from it beats pulling the same gigabytes back over the internet.
+      # A copy, never a hardlink: the suite runs steamcmd against these files
+      # and a hardlink would let a job write through into the shared cache.
+      - name: Seed server files from the local depot cache
+        id: local-cache
+        if: ${{ runner.environment == 'self-hosted' && github.event.inputs.skip_cache != 'true' }}
+        run: |
+          src="/srv/steam-cache/${{ env.RUST_APP_ID }}"
+          if [ -f "${src}/RustDedicated" ]; then
+            cp -a "${src}/." data/server/
+            echo "seeded=true" >> "$GITHUB_OUTPUT"
+            echo "✅ seeded from ${src} ($(du -sh data/server | cut -f1))"
+          else
+            echo "seeded=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️ no usable local depot cache at ${src}; falling back"
+          fi
+
+      # Skipped entirely when seeded locally, which skips the multi-gigabyte
+      # upload back to GitHub at the end of the job as well as the restore.
       - name: Restore server file cache
-        if: ${{ github.event.inputs.skip_cache != 'true' }}
+        if: ${{ github.event.inputs.skip_cache != 'true' && steps.local-cache.outputs.seeded != 'true' }}
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         id: server-cache
         with:
@@ -131,7 +170,7 @@ jobs:
           docker volume rm rust-test-config rust-test-server 2>/dev/null || true
 
       - name: Pre-populate server volume from cache
-        if: ${{ steps.server-cache.outputs.cache-hit == 'true' }}
+        if: ${{ steps.server-cache.outputs.cache-hit == 'true' || steps.local-cache.outputs.seeded == 'true' }}
         run: |
           echo "Pre-populating Docker volume from cached server files..."
           # Create the volume
@@ -195,6 +234,16 @@ jobs:
             docker cp rust-server:/opt/rust/server/. data/server/ 2>/dev/null || true
             ls -la data/server/ | head -20 || true
           fi
+
+      # `docker cp` above writes into the workspace as root. On a hosted runner
+      # the machine is discarded so it never matters; on a self-hosted one the
+      # workspace outlives the job and the next checkout dies with
+      # "EACCES: permission denied, rmdir" before a single test runs. Anything
+      # a container leaves behind as root is a landmine for the next run.
+      - name: Reclaim ownership of the workspace
+        if: always()
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" data || true
 
       # ---------------------------------------------------------------------
       # Cleanup
