@@ -20,10 +20,34 @@ on:
         default: false
         type: boolean
 
+# Least privilege for GITHUB_TOKEN
+permissions:
+  contents: read
+
 env:
   RUST_APP_ID: '258550'
 
 jobs:
+  # -------------------------------------------------------------------------
+  # Static checks (fast, no Docker)
+  # -------------------------------------------------------------------------
+  lint:
+    name: Lint (shellcheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Shellcheck container scripts and tests
+        run: |
+          shellcheck --version
+          shellcheck -S error -s bash -x scripts/* tests/*.sh tests/e2e/*.sh
+
+      - name: RCON password unit test
+        run: bash tests/test_rcon_password.sh
+
   e2e-tests:
     name: End-to-End Tests
     runs-on: ubuntu-latest
@@ -34,10 +58,10 @@ jobs:
       # Checkout and Setup
       # ---------------------------------------------------------------------
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       # ---------------------------------------------------------------------
       # Cache Server Files
@@ -49,7 +73,7 @@ jobs:
 
       - name: Restore server file cache
         if: ${{ github.event.inputs.skip_cache != 'true' }}
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         id: server-cache
         with:
           path: data/server
@@ -70,7 +94,7 @@ jobs:
       # Build Docker Image
       # ---------------------------------------------------------------------
       - name: Build Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
           file: ./Dockerfile
@@ -144,7 +168,7 @@ jobs:
 
       - name: Upload test artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: e2e-test-logs
           path: test-artifacts/
@@ -184,13 +208,13 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Build Docker image
-        uses: docker/build-push-action@v5
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
           file: ./Dockerfile
