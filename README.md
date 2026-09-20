@@ -1,5 +1,11 @@
 # Absolute Rust Server
 
+[![E2E Tests](https://github.com/abspwgm/absolute-rust-server/actions/workflows/e2e.yml/badge.svg)](https://github.com/abspwgm/absolute-rust-server/actions/workflows/e2e.yml)
+[![Docker Image](https://github.com/abspwgm/absolute-rust-server/actions/workflows/publish.yml/badge.svg)](https://github.com/abspwgm/absolute-rust-server/actions/workflows/publish.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
+New to hosting? Start with the [step-by-step install guide](docs/INSTALL.md).
+
 A production-ready Docker image for hosting Rust dedicated servers with optional Oxide/uMod modding support.
 
 ## Features
@@ -17,29 +23,43 @@ A production-ready Docker image for hosting Rust dedicated servers with optional
 
 ### Using Docker Compose (Recommended)
 
-1. Clone this repository:
-   ```bash
-   git clone https://github.com/yourusername/absolute-rust-server.git
-   cd absolute-rust-server
-   ```
+The image is published to the GitHub Container Registry, so there is nothing to clone or build.
 
-2. Configure environment variables in `docker-compose.yml`:
+1. Create a `docker-compose.yml`:
    ```yaml
-   environment:
-     - SERVER_NAME=My Rust Server
-     - RCON_PASSWORD=your_secure_password
-     - ENABLE_OXIDE=true
+   services:
+     rust-server:
+       image: ghcr.io/abspwgm/absolute-rust-server:latest
+       container_name: rust-server
+       restart: unless-stopped
+       ports:
+         - "28015:28015/udp"             # Game port
+         - "27015:27015/udp"             # Query port (server list)
+         - "127.0.0.1:28016:28016/tcp"   # RCON (admin, keep private)
+         - "127.0.0.1:28017:28017/tcp"   # WebRCON (admin, keep private)
+       volumes:
+         - rust-server:/opt/rust/server
+         - rust-config:/config
+       environment:
+         - SERVER_NAME=My Rust Server
+         - ENABLE_OXIDE=false
+
+   volumes:
+     rust-server:
+     rust-config:
    ```
 
-3. Start the server:
+2. Start the server:
    ```bash
    docker compose up -d
    ```
 
-4. View logs:
+3. View logs:
    ```bash
    docker logs -f rust-server
    ```
+
+The first start downloads the Rust server files (allow 10GB+ of disk), which can take 30-40 minutes. See [Environment Variables](#environment-variables) for everything you can set, and [Building from Source](#building-from-source) if you would rather build the image yourself.
 
 ### Using Docker Run
 
@@ -55,7 +75,7 @@ docker run -d \
   -e SERVER_NAME="My Rust Server" \
   -e RCON_PASSWORD="your_secure_password" \
   -e ENABLE_OXIDE=true \
-  absolute-rust-server:latest
+  ghcr.io/abspwgm/absolute-rust-server:latest
 ```
 
 ## Ports
@@ -244,9 +264,17 @@ oxide.reload *      # Reload all plugins
 
 ## Building from Source
 
+The repository's `docker-compose.yml` builds the image locally instead of pulling it:
+
 ```bash
-git clone https://github.com/yourusername/absolute-rust-server.git
+git clone https://github.com/abspwgm/absolute-rust-server.git
 cd absolute-rust-server
+docker compose up -d --build
+```
+
+Or build the image on its own:
+
+```bash
 docker build -t absolute-rust-server:latest .
 ```
 
