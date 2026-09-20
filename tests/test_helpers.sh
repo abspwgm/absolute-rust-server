@@ -273,6 +273,17 @@ report_supervisor_state() {
     log_info "=== supervisord events (spawned/exited/backoff) ==="
     docker_exec "${container}" grep -Ei 'spawned|exited|backoff|fatal|stopped' \
         /var/log/rust/supervisord.log 2>&1 | tail -40 || true
+
+    # The smoking gun for a crash loop. supervisor only manages the
+    # /opt/rust/scripts/rust-server wrapper, which never exits, so supervisor
+    # never reports RustDedicated dying: the wrapper's own 30s watchdog restarts
+    # it and logs "Server process not running, restarting..." to its stdout
+    # logfile -- a file inside the container, never container stdout.
+    log_info "=== wrapper watchdog restarts ==="
+    docker_exec "${container}" grep -c 'Server process not running, restarting' \
+        /var/log/rust/supervisor-rust.log 2>&1 || true
+    docker_exec "${container}" grep -E 'restarting|Server started with PID|Failed to start server' \
+        /var/log/rust/supervisor-rust.log 2>&1 | tail -20 || true
     log_info "=== server process table ==="
     docker_exec "${container}" ps -eo pid,ppid,etime,stat,comm,args 2>&1 | tail -30 || true
     log_info "=== end supervisor state ==="
