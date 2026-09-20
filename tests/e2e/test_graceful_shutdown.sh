@@ -21,6 +21,17 @@ TEST_NAME="graceful_shutdown"
 # `docker compose up -d` against a container that is still exiting reports
 # "Running" and does nothing, so start the container directly first and only
 # fall back to compose if it has gone entirely.
+# Everything the game server prints goes to files inside the container, never
+# to `docker logs`: the wrapper's stdout is captured by supervisor into
+# supervisor-rust.log, and rust-logfilter also writes its own rust-server.log.
+# Counting matches in `docker logs` therefore always returned zero no matter
+# what the server did.
+server_output() {
+    docker exec rust-server sh -c \
+        'cat /var/log/rust/supervisor-rust.log /var/log/rust/rust-server.log 2>/dev/null' 2>/dev/null
+    docker logs rust-server 2>&1
+}
+
 restart_container_for_following_tests() {
     log_info "Restarting the container for subsequent tests"
     docker start rust-server > /dev/null 2>&1 || {
@@ -67,7 +78,7 @@ test_graceful_shutdown() {
     # terminated", which matches supervisor's own chatter: it passed even while
     # the server was crash-looping and never saving a thing (#5, #14).
     local saves_before
-    saves_before="$(docker logs rust-server 2>&1 | grep -c "Saving World" || true)"
+    saves_before="$(server_output | grep -c "Saving World" || true)"
     [[ "${saves_before}" =~ ^[0-9]+$ ]] || saves_before=0
     log_info "Saves in the log before shutdown: ${saves_before}"
 
@@ -101,7 +112,7 @@ test_graceful_shutdown() {
 
     # The point of a graceful shutdown: the world was actually written.
     local saves_after
-    saves_after="$(docker logs rust-server 2>&1 | grep -c "Saving World" || true)"
+    saves_after="$(server_output | grep -c "Saving World" || true)"
     [[ "${saves_after}" =~ ^[0-9]+$ ]] || saves_after=0
 
     if [[ "${saves_after}" -gt "${saves_before}" ]]; then
@@ -115,10 +126,11 @@ test_graceful_shutdown() {
         # answered by the server's own output, which the captured artifacts have
         # been missing - they only held supervisor lines.
         log_error "=== any save-like line the server printed (case-insensitive) ==="
-        docker logs rust-server 2>&1 | grep -iE 'sav(e|ing)|persist|world' | tail -20 || true
-        log_error "=== tail of the server's own log, unfiltered ==="
-        docker exec rust-server tail -60 /var/log/rust/rust-server.log 2>/dev/null \
-            || docker logs rust-server 2>&1 | tail -60 || true
+        server_output | grep -iE 'sav(e|ing)|persist|world' | tail -20 || true
+        log_error "=== tail of supervisor-rust.log (the wrapper's stdout) ==="
+        docker exec rust-server tail -40 /var/log/rust/supervisor-rust.log 2>/dev/null || true
+        log_error "=== tail of rust-server.log (the filter's own file) ==="
+        docker exec rust-server tail -40 /var/log/rust/rust-server.log 2>/dev/null || true
         log_error "=== end ==="
 
         # Leave the container running even though this assertion failed, or
