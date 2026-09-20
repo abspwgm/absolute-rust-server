@@ -14,6 +14,35 @@ TEST_NAME="graceful_shutdown"
 # -----------------------------------------------------------------------------
 # Test: Graceful Shutdown
 # -----------------------------------------------------------------------------
+# Bring the container back after the shutdown test, whatever the verdict was.
+# A container left stopped fails every test that follows on someone else's
+# behalf: restart_update has been reported red for exactly that reason.
+#
+# `docker compose up -d` against a container that is still exiting reports
+# "Running" and does nothing, so start the container directly first and only
+# fall back to compose if it has gone entirely.
+restart_container_for_following_tests() {
+    log_info "Restarting the container for subsequent tests"
+    docker start rust-server > /dev/null 2>&1 || {
+        cd "$(dirname "${SCRIPT_DIR}")/.."
+        docker compose -f docker-compose.test.yml up -d
+    }
+
+    local attempts=0
+    while [[ "$(docker inspect -f '{{.State.Running}}' rust-server 2>/dev/null)" != "true" ]]; do
+        if [[ ${attempts} -ge 30 ]]; then
+            log_error "Container failed to restart after the graceful shutdown test"
+            docker logs rust-server 2>&1 | tail -20 || true
+            return 1
+        fi
+        sleep 2
+        attempts=$((attempts + 1))
+    done
+
+    log_pass "Container restarted successfully"
+    return 0
+}
+
 test_graceful_shutdown() {
     log_test_start "${TEST_NAME}"
 
@@ -79,35 +108,31 @@ test_graceful_shutdown() {
         log_pass "The server saved the world on shutdown (${saves_before} -> ${saves_after})"
     else
         log_error "No new save was written on shutdown (still ${saves_after})"
-        log_error "=== last 40 log lines ==="
-        docker logs rust-server 2>&1 | tail -40 || true
+
+        # Two things can produce this, and the diagnostics have not so far been
+        # able to tell them apart: the server really did not save, or it did and
+        # "Saving World" is not the string this build prints. Both questions are
+        # answered by the server's own output, which the captured artifacts have
+        # been missing - they only held supervisor lines.
+        log_error "=== any save-like line the server printed (case-insensitive) ==="
+        docker logs rust-server 2>&1 | grep -iE 'sav(e|ing)|persist|world' | tail -20 || true
+        log_error "=== tail of the server's own log, unfiltered ==="
+        docker exec rust-server tail -60 /var/log/rust/rust-server.log 2>/dev/null \
+            || docker logs rust-server 2>&1 | tail -60 || true
+        log_error "=== end ==="
+
+        # Leave the container running even though this assertion failed, or
+        # every test after this one fails as collateral rather than on its own
+        # merits. restart_update has been failing this way.
+        restart_container_for_following_tests
         log_test_fail "${TEST_NAME}"
         return 1
     fi
 
-    # --- restart deterministically for the tests that follow ---------------
-    # Previously this ran `docker compose up -d` against a container that was
-    # still exiting; compose reported "Running", did nothing, and the container
-    # never came back, which failed restart_update too.
-    log_info "Restarting the container for subsequent tests"
-    docker start rust-server > /dev/null 2>&1 || {
-        cd "$(dirname "${SCRIPT_DIR}")/.."
-        docker compose -f docker-compose.test.yml up -d
-    }
-
-    local attempts=0
-    while [[ "$(docker inspect -f '{{.State.Running}}' rust-server 2>/dev/null)" != "true" ]]; do
-        if [[ ${attempts} -ge 30 ]]; then
-            log_error "Container failed to restart after graceful shutdown test"
-            docker logs rust-server 2>&1 | tail -20 || true
-            log_test_fail "${TEST_NAME}"
-            return 1
-        fi
-        sleep 2
-        attempts=$((attempts + 1))
-    done
-
-    log_pass "Container restarted successfully"
+    if ! restart_container_for_following_tests; then
+        log_test_fail "${TEST_NAME}"
+        return 1
+    fi
 
     log_test_pass "${TEST_NAME}"
     return 0
