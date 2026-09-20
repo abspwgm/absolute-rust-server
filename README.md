@@ -119,7 +119,9 @@ docker run -d \
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ENABLE_OXIDE` | `false` | Enable Oxide/uMod installation |
-| `OXIDE_AUTO_UPDATE` | `true` | Auto-update Oxide on start |
+| `OXIDE_AUTO_UPDATE` | `true` | Install a newer pinned Oxide version on start |
+| `OXIDE_VERSION` | `2.0.7723` | Oxide release to install |
+| `OXIDE_SHA256` | (pinned) | Checksum the download must match |
 
 ### Update Settings
 
@@ -168,6 +170,14 @@ environment:
   - ENABLE_OXIDE=true
   - OXIDE_AUTO_UPDATE=true
 ```
+
+Oxide is a mod loader, so it runs arbitrary code next to your world. It is never
+baked into the image: the container downloads the exact release named by
+`OXIDE_VERSION` and refuses to install it unless the archive matches
+`OXIDE_SHA256`. Both are pinned in the image and bumped together in a PR, so an
+upstream release (or a tampered download) can never reach your server on its own.
+`OXIDE_AUTO_UPDATE=true` means "move to the pinned version if a different one is
+installed", not "fetch whatever is newest".
 
 ### Installing Plugins
 

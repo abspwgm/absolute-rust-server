@@ -48,6 +48,9 @@ jobs:
       - name: RCON password unit test
         run: bash tests/test_rcon_password.sh
 
+      - name: Oxide pin unit test
+        run: bash tests/test_oxide_pin.sh
+
   e2e-tests:
     name: End-to-End Tests
     runs-on: ubuntu-latest

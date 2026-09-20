@@ -104,8 +104,12 @@ ENV RCON_ENABLED=true \
 ENV QUERY_PORT=27015
 
 # Modding - Oxide/uMod
+# Oxide is downloaded at run time, never baked in, and verified against this
+# sha256 before it is extracted. Bump OXIDE_VERSION and OXIDE_SHA256 together.
 ENV ENABLE_OXIDE=false \
-    OXIDE_AUTO_UPDATE=true
+    OXIDE_AUTO_UPDATE=true \
+    OXIDE_VERSION=2.0.7723 \
+    OXIDE_SHA256=ce1e8f2953875e1973f303c3ee11dc0e231abc7b8a5716542aa642a5b390ca8e
 
 # Update Settings
 ENV UPDATE_ON_START=true \

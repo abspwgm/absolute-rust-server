@@ -34,9 +34,12 @@ log_error() {
 # -----------------------------------------------------------------------------
 # Path constants
 # -----------------------------------------------------------------------------
-STEAMCMD_PATH="/opt/steamcmd"
-RUST_SERVER_PATH="/opt/rust/server"
-CONFIG_PATH="/config"
+# The in-image layout is fixed. TEST_ROOT is empty in every container and exists
+# only so the unit tests can exercise these scripts outside one.
+TEST_ROOT="${TEST_ROOT:-}"
+STEAMCMD_PATH="${TEST_ROOT}/opt/steamcmd"
+RUST_SERVER_PATH="${TEST_ROOT}/opt/rust/server"
+CONFIG_PATH="${TEST_ROOT}/config"
 SETTINGS_PATH="${CONFIG_PATH}/settings"
 BACKUPS_PATH="${CONFIG_PATH}/backups"
 OXIDE_PATH="${CONFIG_PATH}/oxide"
@@ -298,15 +301,23 @@ is_oxide_installed() {
 }
 
 get_oxide_version() {
-    if is_oxide_installed; then
-        local version_file="${RUST_SERVER_PATH}/RustDedicated_Data/Managed/Oxide.Core.dll.version"
-        if [[ -f "${version_file}" ]]; then
-            cat "${version_file}"
-        else
-            echo "installed"
-        fi
-    else
+    if ! is_oxide_installed; then
         echo "not installed"
+        return 0
+    fi
+
+    # Written by oxide-installer from the pinned OXIDE_VERSION.
+    local marker="${RUST_SERVER_PATH}/oxide/.oxide_version"
+    if [[ -s "${marker}" ]]; then
+        tr -d '\r\n' < "${marker}"
+        return 0
+    fi
+
+    local version_file="${RUST_SERVER_PATH}/RustDedicated_Data/Managed/Oxide.Core.dll.version"
+    if [[ -f "${version_file}" ]]; then
+        cat "${version_file}"
+    else
+        echo "installed"
     fi
 }
 
