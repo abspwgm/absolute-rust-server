@@ -27,8 +27,17 @@ TEST_NAME="graceful_shutdown"
 # Counting matches in `docker logs` therefore always returned zero no matter
 # what the server did.
 server_output() {
-    docker exec rust-server sh -c \
-        'cat /var/log/rust/supervisor-rust.log /var/log/rust/rust-server.log 2>/dev/null' 2>/dev/null
+    # `docker exec` cannot run against a stopped container, and the whole point
+    # of this test is to inspect the server after it has shut down - so the
+    # previous version silently returned nothing exactly when it mattered, and
+    # the save count was measured against an empty string. `docker cp` reads
+    # from a stopped container's filesystem, which is what is needed here.
+    local tmp
+    tmp="$(mktemp -d)"
+    docker cp rust-server:/var/log/rust/supervisor-rust.log "${tmp}/" 2>/dev/null || true
+    docker cp rust-server:/var/log/rust/rust-server.log "${tmp}/" 2>/dev/null || true
+    cat "${tmp}"/*.log 2>/dev/null || true
+    rm -rf "${tmp}"
     docker logs rust-server 2>&1
 }
 
@@ -127,10 +136,8 @@ test_graceful_shutdown() {
         # been missing - they only held supervisor lines.
         log_error "=== any save-like line the server printed (case-insensitive) ==="
         server_output | grep -iE 'sav(e|ing)|persist|world' | tail -20 || true
-        log_error "=== tail of supervisor-rust.log (the wrapper's stdout) ==="
-        docker exec rust-server tail -40 /var/log/rust/supervisor-rust.log 2>/dev/null || true
-        log_error "=== tail of rust-server.log (the filter's own file) ==="
-        docker exec rust-server tail -40 /var/log/rust/rust-server.log 2>/dev/null || true
+        log_error "=== tail of the server's logs, copied out of the stopped container ==="
+        server_output | tail -60 || true
         log_error "=== end ==="
 
         # Leave the container running even though this assertion failed, or
