@@ -65,10 +65,21 @@ test_steam_init() {
     fi
 
     # --- the captured failure signatures must be absent -------------------
+    # "cannot open shared object file" is NOT a failure signature. Steam probes
+    # for a local steamclient.so in the working directory first, fails, and then
+    # loads the real one from $HOME/.steam/sdk64 - so that line appears on every
+    # successful start:
+    #
+    #   steamclient.so: cannot open shared object file: No such file or directory
+    #   [S_API] SteamAPI_Init(): Loaded '/home/rust/.steam/sdk64/steamclient.so' OK.
+    #           (First tried local 'steamclient.so')
+    #
+    # #14's signature was "Permission denied" on /root, followed by the two
+    # markers below, which only ever appear when init genuinely fails.
     local failure_markers=(
-        "cannot open shared object file"
         "Couldn't initialize Steam Server"
         "Failed to load module"
+        "steamclient.so: cannot open shared object file: Permission denied"
     )
     local marker found=0
     for marker in "${failure_markers[@]}"; do
@@ -78,8 +89,18 @@ test_steam_init() {
         fi
     done
 
+    # Absence of failure is not proof of success: assert that init actually
+    # happened, and from the server user's own home rather than root's.
     if [[ ${found} -eq 0 ]]; then
-        log_success "No Steam initialisation failures in the server log"
+        if docker exec "${CONTAINER}" grep -qE "SteamAPI_Init\(\): Loaded '/home/rust/\.steam/sdk64/steamclient\.so' OK" \
+            "${SERVER_LOG}" 2>/dev/null; then
+            log_success "Steam initialised from the server user's own SDK"
+        else
+            log_error "No successful SteamAPI_Init from /home/rust/.steam/sdk64 in the log"
+            docker exec "${CONTAINER}" grep -iE 'SteamAPI_Init|steamclient' "${SERVER_LOG}" 2>&1 | tail -20 || true
+            log_test_fail "${TEST_NAME}"
+            return 1
+        fi
     else
         log_error "=== Steam-related log lines ==="
         docker exec "${CONTAINER}" grep -iE 'steam|steamclient' "${SERVER_LOG}" 2>&1 | tail -30 || true
