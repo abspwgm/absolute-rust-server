@@ -210,3 +210,16 @@ jobs:
 
           # Check supervisor config
           docker run --rm absolute-rust-server:build-test cat /etc/supervisor/conf.d/rust.conf
+
+          # The server runs as `rust` and loads steamclient.so from its own
+          # $HOME. When that was unreadable the server crash-looped every 35s
+          # while the container still reported healthy (#14), so this is
+          # asserted on every build rather than trusted.
+          echo "Checking steamclient.so is readable by the server user"
+          docker run --rm --user rust absolute-rust-server:build-test \
+            test -r /home/rust/.steam/sdk64/steamclient.so
+          docker run --rm --user rust absolute-rust-server:build-test \
+            test -r /home/rust/.steam/sdk32/steamclient.so
+          echo "Checking supervisor gives the server the right HOME"
+          docker run --rm absolute-rust-server:build-test \
+            grep -q 'HOME="/home/rust"' /etc/supervisor/conf.d/rust.conf

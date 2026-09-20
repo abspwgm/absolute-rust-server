@@ -64,6 +64,20 @@ RUN mkdir -p /opt/rust/server \
     && chown -R rust:rust /var/log/rust \
     && chown -R rust:rust /var/run/rust
 
+# Give the server user its own Steam SDK.
+#
+# RustDedicated loads steamclient.so from $HOME/.steam/sdk{64,32}. SteamCMD
+# puts its copy under /root, which the unprivileged `rust` user cannot even
+# traverse, so Steam initialisation failed on every start and the watchdog
+# restarted the server every 35 seconds forever (#14). The files are copied
+# rather than symlinked into /root so nothing here depends on root's home
+# staying readable.
+RUN mkdir -p /home/rust/.steam/sdk64 /home/rust/.steam/sdk32 \
+    && cp /opt/steamcmd/linux64/steamclient.so /home/rust/.steam/sdk64/steamclient.so \
+    && cp /opt/steamcmd/linux32/steamclient.so /home/rust/.steam/sdk32/steamclient.so \
+    && chown -R rust:rust /home/rust \
+    && chmod 0755 /home/rust
+
 # Copy scripts
 COPY scripts/ /opt/rust/scripts/
 
