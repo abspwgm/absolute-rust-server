@@ -24,7 +24,7 @@ test_restart_update() {
 
     # Verify server process is running (from previous tests)
     log_info "Checking server process is running"
-    if MSYS_NO_PATHCONV=1 docker exec rust-server pgrep -f RustDedicated > /dev/null 2>&1; then
+    if process_is_running "rust-server" "RustDedicated"; then
         log_success "Server process is running"
     else
         log_warn "Server process not found, may still be starting"
@@ -82,7 +82,7 @@ test_restart_update() {
     log_info "Waiting for server process to start"
     attempts=0
     while [[ ${attempts} -lt 60 ]]; do
-        if MSYS_NO_PATHCONV=1 docker exec rust-server pgrep -f RustDedicated > /dev/null 2>&1; then
+        if process_is_running "rust-server" "RustDedicated"; then
             log_success "Server process started after container restart"
             log_test_pass "${TEST_NAME}"
             return 0

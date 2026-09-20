@@ -11,14 +11,20 @@ services:
       dockerfile: Dockerfile
     image: absolute-rust-server:latest
     container_name: rust-server
+    # Must exceed supervisor stopwaitsecs (150s), which must exceed the server's
+    # own save wait (120s). Without this docker stop killed the server after
+    # 10s and the world save was lost (#5).
+    stop_grace_period: 180s
     restart: unless-stopped
 
     # Ports
     ports:
       - "28015:28015/udp"   # Game port
-      - "28016:28016/tcp"   # RCON port
-      - "28017:28017/tcp"   # RCON Web port
       - "27015:27015/udp"   # Query port
+      # RCON and WebRCON are admin ports: bound to localhost so they are not
+      # exposed to the network. Only widen these if you know you need to.
+      - "127.0.0.1:28016:28016/tcp"   # RCON port
+      - "127.0.0.1:28017:28017/tcp"   # RCON Web port
 
     # Volumes
     volumes:
@@ -42,7 +48,8 @@ services:
       # RCON Settings
       - RCON_ENABLED=true
       - RCON_PORT=28016
-      - RCON_PASSWORD=changeme
+      # Leave empty to have a random password generated at /config/rcon_password
+      - RCON_PASSWORD=${RCON_PASSWORD:-}
       - RCON_WEB=true
       - RCON_WEB_PORT=28017
 

@@ -34,16 +34,27 @@ log_error() {
 # -----------------------------------------------------------------------------
 # Path constants
 # -----------------------------------------------------------------------------
-STEAMCMD_PATH="/opt/steamcmd"
-RUST_SERVER_PATH="/opt/rust/server"
-CONFIG_PATH="/config"
+# The in-image layout is fixed. TEST_ROOT is empty in every container and exists
+# only so the unit tests can exercise these scripts outside one.
+TEST_ROOT="${TEST_ROOT:-}"
+STEAMCMD_PATH="${TEST_ROOT}/opt/steamcmd"
+RUST_SERVER_PATH="${TEST_ROOT}/opt/rust/server"
+CONFIG_PATH="${TEST_ROOT}/config"
 SETTINGS_PATH="${CONFIG_PATH}/settings"
 BACKUPS_PATH="${CONFIG_PATH}/backups"
 OXIDE_PATH="${CONFIG_PATH}/oxide"
 LOG_PATH="/var/log/rust"
-PID_PATH="/var/run/rust"
+PID_PATH="${TEST_ROOT}/var/run/rust"
 
 RUST_SERVER_PID="${PID_PATH}/rust-server.pid"
+
+# The account the server runs as (config/supervisord.conf sets user=rust), its
+# home, and the home SteamCMD uses when it runs as root.
+SERVER_USER="${SERVER_USER:-rust}"
+SERVER_GROUP="${SERVER_GROUP:-rust}"
+SERVER_HOME="${TEST_ROOT}/home/${SERVER_USER}"
+STEAMCMD_HOME="${TEST_ROOT}/root"
+RCON_PASSWORD_FILE="${CONFIG_PATH}/rcon_password"
 RUST_APP_ID="258550"
 
 # -----------------------------------------------------------------------------
@@ -128,8 +139,92 @@ is_backups_enabled() {
 }
 
 # -----------------------------------------------------------------------------
+# RCON password helpers
+# -----------------------------------------------------------------------------
+# Known default passwords that must never protect a remote console
+RCON_PASSWORD_DENYLIST=("changeme" "password" "your_secure_password" "admin" "rcon")
+
+is_default_rcon_password() {
+    local candidate="${1,,}"
+    local denied
+
+    if [[ -z "${candidate}" ]]; then
+        return 0
+    fi
+    for denied in "${RCON_PASSWORD_DENYLIST[@]}"; do
+        if [[ "${candidate}" == "${denied}" ]]; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Decides the RCON password and stores it in the global RCON_PASSWORD.
+# An empty or known-default password is replaced by a random one saved to
+# ${RCON_PASSWORD_FILE}; the value itself is never logged.
+# Note: this logs to stdout, so never call it via $(...) - read RCON_PASSWORD
+resolve_rcon_password() {
+    if ! is_rcon_enabled; then
+        return 0
+    fi
+
+    # User-supplied password: use unchanged
+    if ! is_default_rcon_password "${RCON_PASSWORD}"; then
+        return 0
+    fi
+
+    # Reuse the password generated on a previous start
+    local stored=""
+    if [[ -r "${RCON_PASSWORD_FILE}" ]]; then
+        stored=$(tr -d '\r\n' < "${RCON_PASSWORD_FILE}")
+    fi
+    if [[ ${#stored} -ge 24 ]]; then
+        RCON_PASSWORD="${stored}"
+        log_info "Using generated RCON password from ${RCON_PASSWORD_FILE}"
+        return 0
+    fi
+
+    log_warn "RCON_PASSWORD is empty or a known default, generating a random one"
+
+    # Alphanumeric only, so it is safe on the server command line
+    local generated
+    generated=$(head -c 64 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32)
+    if [[ ${#generated} -lt 24 ]]; then
+        log_error "Failed to generate an RCON password, disabling RCON"
+        RCON_ENABLED=false
+        return 1
+    fi
+
+    # Write with mode 600, owned by the server user
+    if ! (umask 077 && echo "${generated}" > "${RCON_PASSWORD_FILE}"); then
+        log_error "Failed to write ${RCON_PASSWORD_FILE}, disabling RCON"
+        RCON_ENABLED=false
+        return 1
+    fi
+    chmod 600 "${RCON_PASSWORD_FILE}"
+    chown rust:rust "${RCON_PASSWORD_FILE}" 2>/dev/null || true
+
+    RCON_PASSWORD="${generated}"
+    log_success "Generated RCON password saved to ${RCON_PASSWORD_FILE}"
+    log_info "Read it with: docker exec <container> cat ${RCON_PASSWORD_FILE}"
+    return 0
+}
+
+# -----------------------------------------------------------------------------
 # Process helpers
 # -----------------------------------------------------------------------------
+# True while a pid is a live process. A process that has exited but has not yet
+# been reaped is still a valid pid and still answers kill -0, so a wait loop
+# built on kill -0 alone can hang on a zombie forever.
+process_alive() {
+    local pid="$1"
+    [[ -n "${pid}" ]] || return 1
+    kill -0 "${pid}" 2>/dev/null || return 1
+    local state
+    state="$(awk '{print $3}' "/proc/${pid}/stat" 2>/dev/null)"
+    [[ "${state}" != "Z" ]]
+}
+
 is_server_running() {
     if [[ -f "${RUST_SERVER_PID}" ]]; then
         local pid
@@ -225,15 +320,23 @@ is_oxide_installed() {
 }
 
 get_oxide_version() {
-    if is_oxide_installed; then
-        local version_file="${RUST_SERVER_PATH}/RustDedicated_Data/Managed/Oxide.Core.dll.version"
-        if [[ -f "${version_file}" ]]; then
-            cat "${version_file}"
-        else
-            echo "installed"
-        fi
-    else
+    if ! is_oxide_installed; then
         echo "not installed"
+        return 0
+    fi
+
+    # Written by oxide-installer from the pinned OXIDE_VERSION.
+    local marker="${RUST_SERVER_PATH}/oxide/.oxide_version"
+    if [[ -s "${marker}" ]]; then
+        tr -d '\r\n' < "${marker}"
+        return 0
+    fi
+
+    local version_file="${RUST_SERVER_PATH}/RustDedicated_Data/Managed/Oxide.Core.dll.version"
+    if [[ -f "${version_file}" ]]; then
+        cat "${version_file}"
+    else
+        echo "installed"
     fi
 }
 
@@ -296,6 +399,8 @@ rcon.web $(is_rcon_web_enabled && echo "1" || echo "0")
 EOF
     fi
 
+    # server.cfg holds the RCON password, keep it private to the server user
+    chmod 600 "${cfg_file}" 2>/dev/null || true
     chown rust:rust "${cfg_file}" 2>/dev/null || true
     log_success "server.cfg generated at ${cfg_file}"
 }
@@ -324,4 +429,62 @@ wait_for_server_ready() {
 
     log_warn "Server readiness timeout after ${timeout}s"
     return 1
+}
+
+# -----------------------------------------------------------------------------
+# Steam SDK
+# -----------------------------------------------------------------------------
+# Put steamclient.so where the server user can read it.
+#
+# SteamCMD runs as root and leaves its copy under /root/.steam, and /root is mode
+# 700. The server runs as ${SERVER_USER}, so it could not read the library:
+# SteamAPI_Init failed on every start, the unhandled NullReferenceException that
+# follows tore the server down, and the watchdog restarted it every 35 seconds
+# forever. The server had never started successfully (#14).
+#
+# Called from bootstrap before supervisor starts, and again after any later
+# update, because SteamCMD refreshes steamclient.so along with the client.
+install_steam_sdk() {
+    local bits source dest installed_64=false
+
+    for bits in 64 32; do
+        dest="${SERVER_HOME}/.steam/sdk${bits}"
+
+        # In preference order: the copy SteamCMD refreshed when it last ran,
+        # then the two places the image itself carries one.
+        for source in \
+            "${STEAMCMD_HOME}/.steam/sdk${bits}/steamclient.so" \
+            "${STEAMCMD_PATH}/linux${bits}/steamclient.so" \
+            "${STEAMCMD_HOME}/Steam/steamcmd/linux${bits}/steamclient.so"; do
+
+            [[ -r "${source}" ]] || continue
+
+            if ! mkdir -p "${dest}" 2>/dev/null; then
+                log_warn "Could not create ${dest}"
+                break
+            fi
+            if ! cp -f "${source}" "${dest}/steamclient.so" 2>/dev/null; then
+                log_warn "Could not copy ${source} to ${dest}"
+                break
+            fi
+
+            chmod 0644 "${dest}/steamclient.so" 2>/dev/null || true
+            [[ "${bits}" == "64" ]] && installed_64=true
+            log_info "Installed ${bits}-bit steamclient.so from ${source}"
+            break
+        done
+    done
+
+    # Ownership only matters in the container, where this runs as root.
+    chown -R "${SERVER_USER}:${SERVER_GROUP}" "${SERVER_HOME}/.steam" 2>/dev/null || true
+
+    # RustDedicated is 64-bit. Without sdk64 it cannot initialise Steam at all,
+    # so say so rather than letting the server crash-loop unexplained.
+    if [[ "${installed_64}" != "true" ]]; then
+        log_error "No 64-bit steamclient.so found; the server cannot initialise Steam"
+        log_error "Looked under ${STEAMCMD_HOME}/.steam, ${STEAMCMD_PATH} and ${STEAMCMD_HOME}/Steam"
+        return 1
+    fi
+
+    return 0
 }

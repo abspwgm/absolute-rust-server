@@ -1,5 +1,11 @@
 # Absolute Rust Server
 
+[![E2E Tests](https://github.com/abspwgm/absolute-rust-server/actions/workflows/e2e.yml/badge.svg)](https://github.com/abspwgm/absolute-rust-server/actions/workflows/e2e.yml)
+[![Docker Image](https://github.com/abspwgm/absolute-rust-server/actions/workflows/publish.yml/badge.svg)](https://github.com/abspwgm/absolute-rust-server/actions/workflows/publish.yml)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+
+New to hosting? Start with the [step-by-step install guide](docs/INSTALL.md).
+
 A production-ready Docker image for hosting Rust dedicated servers with optional Oxide/uMod modding support.
 
 ## Features
@@ -17,29 +23,43 @@ A production-ready Docker image for hosting Rust dedicated servers with optional
 
 ### Using Docker Compose (Recommended)
 
-1. Clone this repository:
-   ```bash
-   git clone https://github.com/yourusername/absolute-rust-server.git
-   cd absolute-rust-server
-   ```
+The image is published to the GitHub Container Registry, so there is nothing to clone or build.
 
-2. Configure environment variables in `docker-compose.yml`:
+1. Create a `docker-compose.yml`:
    ```yaml
-   environment:
-     - SERVER_NAME=My Rust Server
-     - RCON_PASSWORD=your_secure_password
-     - ENABLE_OXIDE=true
+   services:
+     rust-server:
+       image: ghcr.io/abspwgm/absolute-rust-server:latest
+       container_name: rust-server
+       restart: unless-stopped
+       ports:
+         - "28015:28015/udp"             # Game port
+         - "27015:27015/udp"             # Query port (server list)
+         - "127.0.0.1:28016:28016/tcp"   # RCON (admin, keep private)
+         - "127.0.0.1:28017:28017/tcp"   # WebRCON (admin, keep private)
+       volumes:
+         - rust-server:/opt/rust/server
+         - rust-config:/config
+       environment:
+         - SERVER_NAME=My Rust Server
+         - ENABLE_OXIDE=false
+
+   volumes:
+     rust-server:
+     rust-config:
    ```
 
-3. Start the server:
+2. Start the server:
    ```bash
    docker compose up -d
    ```
 
-4. View logs:
+3. View logs:
    ```bash
    docker logs -f rust-server
    ```
+
+The first start downloads the Rust server files (allow 10GB+ of disk), which can take 30-40 minutes. See [Environment Variables](#environment-variables) for everything you can set, and [Building from Source](#building-from-source) if you would rather build the image yourself.
 
 ### Using Docker Run
 
@@ -47,15 +67,14 @@ A production-ready Docker image for hosting Rust dedicated servers with optional
 docker run -d \
   --name rust-server \
   -p 28015:28015/udp \
-  -p 28016:28016/tcp \
-  -p 28017:28017/tcp \
   -p 27015:27015/udp \
+  -p 127.0.0.1:28016:28016/tcp \
+  -p 127.0.0.1:28017:28017/tcp \
   -v rust-server:/opt/rust/server \
   -v rust-config:/config \
   -e SERVER_NAME="My Rust Server" \
-  -e RCON_PASSWORD="your_secure_password" \
   -e ENABLE_OXIDE=true \
-  absolute-rust-server:latest
+  ghcr.io/abspwgm/absolute-rust-server:latest
 ```
 
 ## Ports
@@ -63,9 +82,9 @@ docker run -d \
 | Port | Protocol | Description |
 |------|----------|-------------|
 | 28015 | UDP | Game port (player connections) |
-| 28016 | TCP | RCON port |
-| 28017 | TCP | WebRCON port |
-| 27015 | UDP | Steam query port |
+| 27015 | UDP | Steam query port (server list) |
+| 28016 | TCP | RCON port (admin, bound to localhost by default) |
+| 28017 | TCP | WebRCON port (admin, bound to localhost by default) |
 
 ## Environment Variables
 
@@ -91,7 +110,7 @@ docker run -d \
 |----------|---------|-------------|
 | `RCON_ENABLED` | `true` | Enable RCON |
 | `RCON_PORT` | `28016` | RCON port |
-| `RCON_PASSWORD` | Empty | RCON password (required for RCON) |
+| `RCON_PASSWORD` | Empty | RCON password (empty or a known default = one is generated, see [RCON Access](#rcon-access)) |
 | `RCON_WEB` | `true` | Enable WebRCON |
 | `RCON_WEB_PORT` | `28017` | WebRCON port |
 
@@ -100,7 +119,9 @@ docker run -d \
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ENABLE_OXIDE` | `false` | Enable Oxide/uMod installation |
-| `OXIDE_AUTO_UPDATE` | `true` | Auto-update Oxide on start |
+| `OXIDE_AUTO_UPDATE` | `true` | Install a newer pinned Oxide version on start |
+| `OXIDE_VERSION` | `2.0.7723` | Oxide release to install |
+| `OXIDE_SHA256` | (pinned) | Checksum the download must match |
 
 ### Update Settings
 
@@ -150,6 +171,14 @@ environment:
   - OXIDE_AUTO_UPDATE=true
 ```
 
+Oxide is a mod loader, so it runs arbitrary code next to your world. It is never
+baked into the image: the container downloads the exact release named by
+`OXIDE_VERSION` and refuses to install it unless the archive matches
+`OXIDE_SHA256`. Both are pinned in the image and bumped together in a PR, so an
+upstream release (or a tampered download) can never reach your server on its own.
+`OXIDE_AUTO_UPDATE=true` means "move to the pinned version if a different one is
+installed", not "fetch whatever is newest".
+
 ### Installing Plugins
 
 1. Plugins are stored in `/config/oxide/plugins/` inside the container
@@ -193,13 +222,39 @@ Backups are stored in `/config/backups/` with timestamps:
 
 ## RCON Access
 
+RCON is a remote admin console: anyone who can reach it with the password controls the server. Two defaults keep it safe.
+
+### RCON Password
+
+If RCON is enabled and `RCON_PASSWORD` is empty or a known default (`changeme`, `password`, `your_secure_password`, `admin`, `rcon`), the container generates a strong random password on start and saves it to `/config/rcon_password` (mode 600, owned by the server user). The value is never written to the logs. Read it with:
+
+```bash
+docker exec rust-server cat /config/rcon_password
+```
+
+The generated password is kept across restarts. To choose your own, set `RCON_PASSWORD` to anything not on the list above; it is used unchanged and no file is written. With the repository's `docker-compose.yml` you can do that without editing the file:
+
+```bash
+RCON_PASSWORD='something-long-and-unique' docker compose up -d
+```
+
+### RCON Ports
+
+`docker-compose.yml` binds RCON (28016/tcp) and WebRCON (28017/tcp) to `127.0.0.1`, so they are only reachable from the Docker host. The game (28015/udp) and query (27015/udp) ports stay public. To administer the server from another machine, prefer an SSH tunnel over exposing the ports:
+
+```bash
+ssh -L 28016:127.0.0.1:28016 user@your-server
+```
+
+Only change the bindings to `28016:28016/tcp` if you have set a strong password and restricted access with a firewall. Never forward these ports on your router.
+
 ### Using RCON Client
 
-Connect to `your-server:28016` with your RCON password.
+Connect to `localhost:28016` on the Docker host (or through the tunnel) with your RCON password.
 
 ### WebRCON
 
-Access WebRCON at `http://your-server:28017` (if enabled).
+WebRCON listens on port `28017` (if enabled); point a WebRCON client at `localhost:28017`.
 
 ### Common RCON Commands
 
@@ -223,7 +278,7 @@ oxide.reload *      # Reload all plugins
 
 ### Can't Connect to Server
 
-1. Verify ports are forwarded: 28015/udp, 28016/tcp
+1. Verify ports are forwarded: 28015/udp, 27015/udp (RCON ports should not be forwarded)
 2. Check firewall rules
 3. Verify server is fully started (check logs for "Server startup complete")
 
@@ -244,9 +299,17 @@ oxide.reload *      # Reload all plugins
 
 ## Building from Source
 
+The repository's `docker-compose.yml` builds the image locally instead of pulling it:
+
 ```bash
-git clone https://github.com/yourusername/absolute-rust-server.git
+git clone https://github.com/abspwgm/absolute-rust-server.git
 cd absolute-rust-server
+docker compose up -d --build
+```
+
+Or build the image on its own:
+
+```bash
 docker build -t absolute-rust-server:latest .
 ```
 

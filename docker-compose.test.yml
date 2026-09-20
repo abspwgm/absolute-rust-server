@@ -11,6 +11,10 @@ services:
       dockerfile: Dockerfile
     image: absolute-rust-server:test
     container_name: rust-server
+    # Must exceed supervisor stopwaitsecs (150s), which must exceed the server's
+    # own save wait (120s). Without this docker stop killed the server after
+    # 10s and the world save was lost (#5).
+    stop_grace_period: 180s
 
     # Ports
     ports:
@@ -35,8 +39,10 @@ services:
       - SERVER_LEVEL=Procedural Map
       - SERVER_SAVEINTERVAL=300
 
-      # RCON disabled for simpler testing
-      - RCON_ENABLED=false
+      # RCON enabled with a known default password on purpose:
+      # test_rcon_default.sh asserts it is replaced by a generated one
+      - RCON_ENABLED=true
+      - RCON_PASSWORD=changeme
 
       # No Oxide for faster tests
       - ENABLE_OXIDE=false

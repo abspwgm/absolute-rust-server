@@ -77,41 +77,46 @@ test_server_start() {
     log_info "Waiting for server to initialize (this may take several minutes)"
     log_info "Looking for 'Server startup complete' or 'SteamServer' in logs..."
 
-    # First try the standard message
-    if wait_for_log "rust-server" "Server startup complete" 600; then
-        log_success "Server initialized successfully (startup complete message found)"
-    else
-        # Try alternative success indicators
-        log_info "Standard startup message not found, checking alternative indicators..."
+    # The server is up when its process is up and *stays* up.
+    #
+    # A startup line in the log only proves the server was alive at some earlier
+    # point. Because supervisor runs with autorestart=true, RustDedicated can die
+    # and be respawned, and the fallback "SteamServer" search below would match a
+    # line written minutes before that crash - which is how a crash-restart loop
+    # used to report "initialized" and then fail the process assert on timing
+    # alone (#2). So gate on an unbroken run of the process, and treat the log
+    # lines as supplementary detail rather than proof.
+    log_info "Waiting for the server process to come up and stay up"
+    if ! wait_for_process_stable "rust-server" "RustDedicated" \
+            "${SERVER_STABLE_TIMEOUT:-900}" "${SERVER_STABLE_SECS:-60}"; then
+        log_error "Server process did not stay up"
+        report_supervisor_state "rust-server"
+        log_error "=== Container logs ==="
+        docker logs rust-server --tail 100 2>&1 || true
+        log_error "=== End container logs ==="
+        export_container_diagnostics rust-server "${LOGS_DIR:-data/logs}/container"
+        return 1
+    fi
+    log_success "Server process has been up continuously"
 
-        if wait_for_log "rust-server" "SteamServer" 60; then
-            log_success "Server initialized (SteamServer message found)"
-        else
-            # Check if server process is at least running
-            if MSYS_NO_PATHCONV=1 docker exec rust-server pgrep -f RustDedicated > /dev/null 2>&1; then
-                log_warn "Server process is running but startup messages not found"
-                log_info "=== Recent container logs ==="
-                docker logs rust-server --tail 30 2>&1 || true
-                log_info "=== End recent logs ==="
-                log_warn "Proceeding - server process is active"
-            else
-                log_error "Server process is not running"
-                log_error "=== Container logs ==="
-                docker logs rust-server --tail 100 2>&1 || true
-                log_error "=== End container logs ==="
-
-                # Show running processes for debugging
-                log_info "=== Running processes ==="
-                MSYS_NO_PATHCONV=1 docker exec rust-server ps aux 2>&1 || true
-                log_info "=== End processes ==="
-                return 1
-            fi
-        fi
+    # Uptime alone is not enough: a server that crashes after the window closes
+    # still satisfies it (#14 crash-looped every 35s past a 60s window). The
+    # watchdog's own restart log is the deterministic signal.
+    if ! assert_no_watchdog_restarts "rust-server"; then
+        report_supervisor_state "rust-server"
+        export_container_diagnostics rust-server "${LOGS_DIR:-data/logs}/container"
+        log_test_fail "${TEST_NAME}"
+        return 1
     fi
 
-    # Verify server process is running
-    log_info "Verifying server process"
-    assert_process_running "rust-server" "RustDedicated"
+    # Supplementary: which startup message the server got to, for the log only.
+    if wait_for_log "rust-server" "Server startup complete" 60; then
+        log_info "Startup message found: 'Server startup complete'"
+    elif wait_for_log "rust-server" "SteamServer" 10; then
+        log_info "Startup message found: 'SteamServer'"
+    else
+        log_info "No startup message seen yet; the process is up, which is the gate"
+    fi
 
     log_test_pass "${TEST_NAME}"
     return 0
