@@ -10,8 +10,11 @@ name: E2E Tests
 on:
   push:
     branches: [main, develop]
+  # Any base, not just main. A pull request stacked on another branch is still
+  # a change that has to be gated; filtering on [main] meant stacked work
+  # merged with no checks at all and only got tested once the stack landed.
   pull_request:
-    branches: [main]
+    branches: ['**']
   workflow_dispatch:
     inputs:
       skip_cache:
