@@ -295,15 +295,33 @@ rcon_open() {
     while IFS= read -r -t 10 header <&"${RCON_FD}" && [[ -n "${header%$'\r'}" ]]; do :; done
 }
 
+# Closes the connection the way WebSocket expects: a masked, empty close frame,
+# then whatever the server still has in flight is read and discarded. Dropping
+# the socket with its reply and broadcast log lines unread makes the kernel send
+# a reset, and Fleck logs every reset as a SocketException stack trace (run
+# 35642672267). Bounded, because the server broadcasts its console to every
+# WebRCON client and may keep talking.
 rcon_close() {
-    [[ -n "${RCON_FD:-}" ]] && exec {RCON_FD}>&-
+    [[ -n "${RCON_FD:-}" ]] || return 0
+    printf '\x88\x80\x00\x00\x00\x00' 1>&"${RCON_FD}" 2>/dev/null
+    local junk reads=0
+    while [[ ${reads} -lt 20 ]] && IFS= read -r -t 1 -d '' junk <&"${RCON_FD}" 2>/dev/null; do
+        reads=$((reads + 1))
+    done
+    exec {RCON_FD}>&-
     RCON_FD=""
 }
+
+# "Saved <n> ents" is what SaveRestore prints when it has written the world, for a
+# requested save and a scheduled one alike. "Saving World" is not: it is printed
+# once while the world is processed at startup, and server.save never prints it,
+# so waiting for it timed out on a save that had completed in under a second.
+SAVE_WRITTEN_PATTERN='Saved [0-9]+ ents'
 
 # grep -c prints 0 and exits 1 on no match, and prints nothing on a missing file.
 count_saves() {
     local n
-    n="$(grep -c "Saving World" "$1" 2>/dev/null)"
+    n="$(grep -cE "${SAVE_WRITTEN_PATTERN}" "$1" 2>/dev/null)"
     echo "${n:-0}"
 }
 
@@ -322,10 +340,10 @@ rcon_send() {
     printf '\x00\x00\x00\x00%s' "${payload}" >&"${fd}"
 }
 
-# Asks the server to save and waits until it says it has. "Saving World" is
-# printed once the save completes, with its duration, so a new occurrence in the
-# server log is the confirmation. Returns 1 if the save could not be requested or
-# was not confirmed within the timeout; the caller stops the server either way.
+# Asks the server to save and waits until it says it has: a new "Saved <n> ents"
+# line in the server log (see SAVE_WRITTEN_PATTERN). Returns 1 if the save could
+# not be requested or was not confirmed within the timeout; the caller stops the
+# server either way.
 save_world() {
     local timeout="${1:-60}"
     local log="${LOG_PATH}/rust-server.log"

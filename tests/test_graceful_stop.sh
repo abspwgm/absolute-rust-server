@@ -105,11 +105,29 @@ def handle(conn):
         return
     request = json.loads(payload)
     if request.get("Message") == "server.save":
+        # What RustDedicated prints for a requested save (run 35642672267). It
+        # never prints "Saving World" here; that line only appears at startup.
         with open(log, "a", encoding="utf-8") as handle_:
-            handle_.write("[IMPORTANT] [0.1s] Saving World\n")
+            handle_.write("Saved 983 ents, cache(0.01), write(0.00), disk(0.00).\n"
+                          "[IMPORTANT] Saving complete\n")
     reply = json.dumps({"Message": "Saved", "Identifier": request.get("Identifier"),
                         "Type": "Generic", "Stacktrace": ""}).encode()
     conn.sendall(bytes([0x81, len(reply)]) + reply)
+    # The real server also broadcasts its console to every WebRCON client, so
+    # there is unread data in the client's socket when it goes to close.
+    chatter = json.dumps({"Message": "Invalidate Network Cache took 0.00 seconds",
+                          "Identifier": 0, "Type": "Generic", "Stacktrace": ""}).encode()
+    conn.sendall(bytes([0x81, len(chatter)]) + chatter)
+    try:
+        b0, b1 = need(2)
+        need(4 if b1 & 0x80 else 0)
+        if b0 == 0x88:
+            with open(os.environ["FAKE_CLOSE_FILE"], "a", encoding="utf-8") as handle_:
+                handle_.write("close frame\n")
+            conn.sendall(bytes([0x88, 0x00]))
+    except EOFError:
+        pass
+    conn.close()
 
 
 def serve():
@@ -141,7 +159,8 @@ FAKE
     # Redirect the child's output: if it inherited the command-substitution
     # pipe below, $( ) would block until the fake server exited.
     FAKE_LOG="${SERVER_LOG}" FAKE_ON_SIGINT="$1" FAKE_RCON_PASSWORD="${RCON_PW}" \
-        FAKE_PORT_FILE="${WORK}/port" python3 "${script}" > /dev/null 2>&1 &
+        FAKE_PORT_FILE="${WORK}/port" FAKE_CLOSE_FILE="${WORK}/closes" \
+        python3 "${script}" > /dev/null 2>&1 &
     echo "$!"
 }
 
@@ -155,9 +174,10 @@ fake_port() {
     cat "${WORK}/port"
 }
 
+# Counted the way scripts/common counts them (SAVE_WRITTEN_PATTERN).
 saves_in_log() {
     local n
-    n="$(grep -c "Saving World" "${SERVER_LOG}" 2>/dev/null)"
+    n="$(grep -cE 'Saved [0-9]+ ents' "${SERVER_LOG}" 2>/dev/null)"
     echo "${n:-0}"
 }
 
@@ -192,7 +212,11 @@ stop_it() {
 }
 
 # --- a healthy server: saved over WebRCON, then SIGINT --------------------
-: > "${SERVER_LOG}"
+# Seeded with the line the real log already holds by then. It is printed while
+# the world is processed at startup and is not a save; counting it is how the
+# first version of this fix waited 60s for a save that had already happened.
+echo "[IMPORTANT] [0.5s] Saving World" > "${SERVER_LOG}"
+rm -f "${WORK}/closes"
 pid="$(start_fake_server exits)"
 port="$(fake_port)" || fail "the stand-in never opened its WebRCON port"
 stop_it "${pid}" 15 "${port}"
@@ -215,6 +239,16 @@ if ! grep -q "timed out" <<< "${OUT}"; then
     pass "no SIGKILL was needed for a healthy server"
 else
     fail "a healthy server should not have been force-killed: ${OUT}"
+fi
+if grep -q "did not confirm" <<< "${OUT}"; then
+    fail "the save was waited on past its completion: ${OUT}"
+else
+    pass "the startup 'Saving World' line is not mistaken for a save"
+fi
+if [[ -s "${WORK}/closes" ]]; then
+    pass "the connection is closed with a close frame, not dropped"
+else
+    fail "no WebSocket close frame reached the server"
 fi
 
 # --- WebRCON unreachable: still stops, and says the save is not confirmed ---
