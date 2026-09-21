@@ -43,7 +43,7 @@ CONFIG_PATH="${TEST_ROOT}/config"
 SETTINGS_PATH="${CONFIG_PATH}/settings"
 BACKUPS_PATH="${CONFIG_PATH}/backups"
 OXIDE_PATH="${CONFIG_PATH}/oxide"
-LOG_PATH="/var/log/rust"
+LOG_PATH="${TEST_ROOT}/var/log/rust"
 PID_PATH="${TEST_ROOT}/var/run/rust"
 
 RUST_SERVER_PID="${PID_PATH}/rust-server.pid"
@@ -243,6 +243,132 @@ get_server_pid() {
     else
         pgrep -f "RustDedicated" 2>/dev/null | head -1
     fi
+}
+
+# -----------------------------------------------------------------------------
+# WebRCON
+# -----------------------------------------------------------------------------
+# RustDedicated does not save on SIGINT: it shuts EAC, RakNet and Steamworks down
+# within a second and exits 0 with the world unwritten (run 35529257566). The only
+# way to get a save on shutdown is to ask for one, and WebRCON is the channel the
+# server listens on. Its stdin is not a console, so a piped command goes nowhere.
+#
+# The image has no WebSocket client and needs none. A client frame must be masked,
+# but an all-zero mask key is legal and leaves the payload unchanged, so a frame
+# is a two- or four-byte header, four zero bytes and the JSON, which bash can
+# write to /dev/tcp directly.
+
+# The password the running server was started with, without generating one.
+# resolve_rcon_password would invent a fresh password if the file were missing,
+# and a password the server never saw can only fail.
+current_rcon_password() {
+    if ! is_default_rcon_password "${RCON_PASSWORD}"; then
+        echo "${RCON_PASSWORD}"
+        return 0
+    fi
+    local stored=""
+    [[ -r "${RCON_PASSWORD_FILE}" ]] && stored=$(tr -d '\r\n' < "${RCON_PASSWORD_FILE}")
+    [[ ${#stored} -ge 24 ]] || return 1
+    echo "${stored}"
+}
+
+# Opens an upgraded WebRCON connection and leaves its fd in RCON_FD.
+rcon_open() {
+    local password path status header
+    RCON_FD=""
+    is_rcon_enabled && is_rcon_web_enabled || return 1
+    password="$(current_rcon_password)" || return 1
+    # jq is in the image; @uri keeps a user-chosen password intact in the path.
+    path="/$(jq -rn --arg p "${password}" '$p | @uri')"
+
+    # The braces scope the 2>/dev/null to this one connect. On a bare exec it
+    # would apply to the shell itself and silence the wrapper's stderr for good.
+    { exec {RCON_FD}<>"/dev/tcp/127.0.0.1/$(get_rcon_port)"; } 2>/dev/null || { RCON_FD=""; return 1; }
+    printf 'GET %s HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n' \
+        "${path}" >&"${RCON_FD}"
+
+    # A wrong password is refused at the upgrade, so 101 is also the auth check.
+    if ! IFS= read -r -t 10 status <&"${RCON_FD}" || [[ "${status}" != *" 101 "* ]]; then
+        rcon_close
+        return 1
+    fi
+    while IFS= read -r -t 10 header <&"${RCON_FD}" && [[ -n "${header%$'\r'}" ]]; do :; done
+}
+
+# Closes the connection the way WebSocket expects: a masked, empty close frame,
+# then whatever the server still has in flight is read and discarded. Dropping
+# the socket with its reply and broadcast log lines unread makes the kernel send
+# a reset, and Fleck logs every reset as a SocketException stack trace (run
+# 35642672267). Bounded, because the server broadcasts its console to every
+# WebRCON client and may keep talking.
+rcon_close() {
+    [[ -n "${RCON_FD:-}" ]] || return 0
+    printf '\x88\x80\x00\x00\x00\x00' 1>&"${RCON_FD}" 2>/dev/null
+    local junk reads=0
+    while [[ ${reads} -lt 20 ]] && IFS= read -r -t 1 -d '' junk <&"${RCON_FD}" 2>/dev/null; do
+        reads=$((reads + 1))
+    done
+    exec {RCON_FD}>&-
+    RCON_FD=""
+}
+
+# "Saved <n> ents" is what SaveRestore prints when it has written the world, for a
+# requested save and a scheduled one alike. "Saving World" is not: it is printed
+# once while the world is processed at startup, and server.save never prints it,
+# so waiting for it timed out on a save that had completed in under a second.
+SAVE_WRITTEN_PATTERN='Saved [0-9]+ ents'
+
+# grep -c prints 0 and exits 1 on no match, and prints nothing on a missing file.
+count_saves() {
+    local n
+    n="$(grep -cE "${SAVE_WRITTEN_PATTERN}" "$1" 2>/dev/null)"
+    echo "${n:-0}"
+}
+
+# rcon_send <fd> <command> ; one masked text frame carrying a WebRcon request
+rcon_send() {
+    local fd="$1" payload len
+    # -a escapes anything outside ASCII, so the length in characters is the
+    # length in bytes, which is what the frame header has to carry.
+    payload="$(jq -acn --arg m "$2" '{Identifier: 1001, Message: $m, Name: "WebRcon"}')"
+    len=${#payload}
+    if [[ ${len} -lt 126 ]]; then
+        printf '%b' "\\x81\\x$(printf '%02x' $((0x80 | len)))" >&"${fd}"
+    else
+        printf '%b' "\\x81\\xfe\\x$(printf '%02x' $((len >> 8)))\\x$(printf '%02x' $((len & 0xff)))" >&"${fd}"
+    fi
+    printf '\x00\x00\x00\x00%s' "${payload}" >&"${fd}"
+}
+
+# Asks the server to save and waits until it says it has: a new "Saved <n> ents"
+# line in the server log (see SAVE_WRITTEN_PATTERN). Returns 1 if the save could
+# not be requested or was not confirmed within the timeout; the caller stops the
+# server either way.
+save_world() {
+    local timeout="${1:-60}"
+    local log="${LOG_PATH}/rust-server.log"
+    local before elapsed=0
+
+    before="$(count_saves "${log}")"
+    if ! rcon_open; then
+        log_warn "Could not reach WebRCON to request a save"
+        return 1
+    fi
+    log_info "Requesting a world save over WebRCON"
+    rcon_send "${RCON_FD}" "server.save"
+
+    while [[ "$(count_saves "${log}")" -le "${before}" ]]; do
+        if [[ ${elapsed} -ge ${timeout} ]]; then
+            rcon_close
+            log_warn "The server did not confirm a save within ${timeout}s"
+            return 1
+        fi
+        sleep 1
+        elapsed=$((elapsed + 1))
+    done
+    rcon_close
+    log_success "World saved"
+    return 0
 }
 
 get_player_count() {

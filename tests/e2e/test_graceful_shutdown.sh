@@ -86,8 +86,15 @@ test_graceful_shutdown() {
     # assertion grepped docker logs for "saving|shutdown|stopping|SIGINT|
     # terminated", which matches supervisor's own chatter: it passed even while
     # the server was crash-looping and never saving a thing (#5, #14).
+    #
+    # A save is counted by "Saved <n> ents", which SaveRestore prints whenever it
+    # writes the world. This counted "Saving World", which is printed once while
+    # the world is processed at startup and never by a requested save: run
+    # 35642672267 saved in under a second ("Saved 983 ents ... Saving complete")
+    # and still failed here. Kept in step with SAVE_WRITTEN_PATTERN in common.
+    local save_written='Saved [0-9]+ ents'
     local saves_before
-    saves_before="$(server_output | grep -c "Saving World" || true)"
+    saves_before="$(server_output | grep -cE "${save_written}" || true)"
     [[ "${saves_before}" =~ ^[0-9]+$ ]] || saves_before=0
     log_info "Saves in the log before shutdown: ${saves_before}"
 
@@ -121,7 +128,7 @@ test_graceful_shutdown() {
 
     # The point of a graceful shutdown: the world was actually written.
     local saves_after
-    saves_after="$(server_output | grep -c "Saving World" || true)"
+    saves_after="$(server_output | grep -cE "${save_written}" || true)"
     [[ "${saves_after}" =~ ^[0-9]+$ ]] || saves_after=0
 
     if [[ "${saves_after}" -gt "${saves_before}" ]]; then
@@ -129,11 +136,10 @@ test_graceful_shutdown() {
     else
         log_error "No new save was written on shutdown (still ${saves_after})"
 
-        # Two things can produce this, and the diagnostics have not so far been
-        # able to tell them apart: the server really did not save, or it did and
-        # "Saving World" is not the string this build prints. Both questions are
-        # answered by the server's own output, which the captured artifacts have
-        # been missing - they only held supervisor lines.
+        # Two things can produce this: the server really did not save, or it did
+        # and printed something other than the pattern above - which is exactly
+        # what happened when this counted "Saving World". The server's own save
+        # lines below tell the two apart.
         log_error "=== any save-like line the server printed (case-insensitive) ==="
         server_output | grep -iE 'sav(e|ing)|persist|world' | tail -20 || true
         log_error "=== tail of the server's logs, copied out of the stopped container ==="
