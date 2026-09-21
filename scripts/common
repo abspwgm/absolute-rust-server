@@ -371,9 +371,59 @@ save_world() {
     return 0
 }
 
+# rcon_read_frame ; one frame from RCON_FD, payload on stdout. Returns 1 on a
+# close frame, a timeout or a broken stream. Server frames are unmasked, and dd
+# with iflag=fullblock reads exactly the bytes asked for: anything that read
+# ahead would swallow the start of the next frame, which a socket cannot give back.
+rcon_read_frame() {
+    local header b0 b1 len
+    header="$(timeout 10 dd bs=2 count=1 iflag=fullblock status=none <&"${RCON_FD}" | od -An -tu1)" || return 1
+    read -r b0 b1 <<< "${header}"
+    [[ -n "${b1:-}" ]] || return 1
+    (( (b0 & 0x0F) == 8 )) && return 1
+    len=$(( b1 & 0x7F ))
+    if (( len == 126 )); then
+        len=$(timeout 10 dd bs=2 count=1 iflag=fullblock status=none <&"${RCON_FD}" | od -An -tu1 | awk '{print $1 * 256 + $2}')
+    elif (( len == 127 )); then
+        len=$(timeout 10 dd bs=8 count=1 iflag=fullblock status=none <&"${RCON_FD}" | od -An -tu1 | awk '{n = 0; for (i = 1; i <= NF; i++) n = n * 256 + $i; print n}')
+    fi
+    [[ "${len}" =~ ^[0-9]+$ ]] || return 1
+    (( len == 0 )) && return 0
+    timeout 10 dd bs="${len}" count=1 iflag=fullblock status=none <&"${RCON_FD}"
+}
+
+# rcon_command <command> [timeout] ; runs one console command over WebRCON and
+# prints the server's reply. The server also broadcasts its console to every
+# WebRCON client, so frames are read until the one answering our Identifier.
+rcon_command() {
+    local command="$1" timeout="${2:-15}" deadline frame reply
+    rcon_open || return 1
+    rcon_send "${RCON_FD}" "${command}"
+    deadline=$(( SECONDS + timeout ))
+    while (( SECONDS < deadline )); do
+        frame="$(rcon_read_frame)" || break
+        reply="$(jq -r 'select(.Identifier == 1001) | .Message' <<< "${frame}" 2>/dev/null)"
+        if [[ -n "${reply}" ]]; then
+            rcon_close
+            printf '%s\n' "${reply}"
+            return 0
+        fi
+    done
+    rcon_close
+    return 1
+}
+
+# The number of players connected, as the server itself reports it through
+# `serverinfo`. This was a placeholder that always said 0, so the idle guard
+# never held an update and "skip backups while players are on" never skipped.
+# A count that cannot be read prints nothing and returns 1: unknown is not zero
+# (standard 2.8), and each caller decides what unknown means for it.
 get_player_count() {
-    # Placeholder - would need RCON or WebSocket to get actual count
-    echo "0"
+    local info count
+    info="$(rcon_command serverinfo)" || return 1
+    count="$(jq -r '.Players // empty' <<< "${info}" 2>/dev/null)"
+    [[ "${count}" =~ ^[0-9]+$ ]] || return 1
+    echo "${count}"
 }
 
 # -----------------------------------------------------------------------------

@@ -4,7 +4,7 @@
 # =============================================================================
 
 # Source common functions
-source /opt/rust/scripts/common
+source "${RUST_SCRIPTS_PATH:-/opt/rust/scripts}/common"
 
 # -----------------------------------------------------------------------------
 # Parse arguments
@@ -40,7 +40,12 @@ should_skip_backup() {
     # Check if we should only backup when idle
     if [[ "${BACKUPS_IF_IDLE,,}" == "true" ]]; then
         local player_count
-        player_count=$(get_player_count)
+        # Unknown backs up: a backup taken with players on is still a backup,
+        # and skipping one on a guess is how a world goes unprotected.
+        if ! player_count=$(get_player_count); then
+            log_warn "Backing up anyway: the player count could not be read over WebRCON"
+            return 1  # Don't skip
+        fi
         if [[ "${player_count}" -gt 0 ]]; then
             log_info "Skipping backup: ${player_count} player(s) online"
             return 0  # Skip
@@ -179,5 +184,8 @@ main() {
     fi
 }
 
-# Run main function
-main
+# Run main only when executed, so tests can source this file and call its
+# functions. Sourcing it used to run a real update or backup.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main
+fi

@@ -222,6 +222,19 @@ jobs:
           path: test-artifacts/
           retention-days: 7
 
+      # The ready-ladder verdict (standard 2.10), on its own so the fleet board's
+      # collector can read it without unpacking logs. It is transport, not the
+      # record: the hub keeps the last conclusive verdict for itself (2.11), so
+      # this expiring does not blank the board during a long outage.
+      - name: Upload the verdict
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verdict
+          path: data/logs/verdict.json
+          if-no-files-found: warn
+          retention-days: 30
+
       # ---------------------------------------------------------------------
       # Update Server File Cache
       # ---------------------------------------------------------------------

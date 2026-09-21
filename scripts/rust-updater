@@ -4,7 +4,7 @@
 # =============================================================================
 
 # Source common functions
-source /opt/rust/scripts/common
+source "${RUST_SCRIPTS_PATH:-/opt/rust/scripts}/common"
 
 # -----------------------------------------------------------------------------
 # Parse arguments
@@ -39,7 +39,13 @@ should_skip_update() {
     # Check if we should only update when idle
     if [[ "${UPDATE_IF_IDLE,,}" == "true" ]]; then
         local player_count
-        player_count=$(get_player_count)
+        # Unknown holds (standard 5.2): an update that restarts the server under
+        # players who could not be counted is the failure this guard exists for.
+        # The next scheduled run tries again.
+        if ! player_count=$(get_player_count); then
+            log_warn "Holding the update: the player count could not be read over WebRCON"
+            return 0  # Skip
+        fi
         if [[ "${player_count}" -gt 0 ]]; then
             log_info "Skipping update: ${player_count} player(s) online"
             return 0  # Skip
@@ -165,5 +171,8 @@ main() {
     fi
 }
 
-# Run main function
-main
+# Run main only when executed, so tests can source this file and call its
+# functions. Sourcing it used to run a real update or backup.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main
+fi
