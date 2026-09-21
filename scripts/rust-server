@@ -122,25 +122,31 @@ stop_server() {
 
     log_info "Stopping Rust server (PID: ${pid})"
 
-    # Send SIGINT for graceful shutdown (allows world save)
-    log_info "Sending SIGINT to server (PID: ${pid}) for graceful shutdown"
+    # How long to let the server save and exit before forcing it. This is the
+    # innermost rung of a ladder that must stay ordered, or the save is cut short (#5):
+    #   this timeout  <  supervisor stopwaitsecs  <  compose stop_grace_period
+    # The save and the exit share it, so the ladder holds however the time splits.
+    local timeout="${SHUTDOWN_TIMEOUT:-120}"
+    local started=${SECONDS}
+
+    # SIGINT on its own exits without writing the world (see save_world), so the
+    # save has to be requested first. It gets half the budget at most: a save that
+    # hangs must still leave time for a clean exit rather than a SIGKILL.
+    if ! save_world $((timeout / 2)); then
+        log_warn "Stopping without a confirmed save; up to $(get_save_interval)s of progress may be lost"
+    fi
+
+    log_info "Sending SIGINT to server (PID: ${pid})"
     kill -SIGINT "${pid}" 2>/dev/null || true
 
-    # How long to let the server save before forcing it. This is the innermost
-    # rung of a ladder that must stay ordered, or the save is cut short (#5):
-    #   this timeout  <  supervisor stopwaitsecs  <  compose stop_grace_period
-    local timeout="${SHUTDOWN_TIMEOUT:-120}"
-    local elapsed=0
-
     while process_alive "${pid}"; do
-        if [[ ${elapsed} -ge ${timeout} ]]; then
+        if (( SECONDS - started >= timeout )); then
             log_warn "Graceful shutdown timed out, sending SIGKILL"
             kill -9 "${pid}" 2>/dev/null || true
             sleep 2
             break
         fi
-        sleep 2
-        elapsed=$((elapsed + 2))
+        sleep 1
     done
 
     # Clean up PID file
@@ -198,9 +204,14 @@ case "${1:-start}" in
     start)
         trap on_shutdown SIGINT SIGTERM
         start_server
-        # Keep the script running for supervisor
+        # Keep the script running for supervisor. The sleep runs in the background
+        # because bash defers a trap until the foreground command returns: a plain
+        # `sleep 30` held the handler back by up to 30s of supervisor's 150s,
+        # which with the 120s shutdown timeout left nothing to spare. `wait`
+        # returns as soon as a trapped signal arrives.
         while true; do
-            sleep 30
+            sleep 30 &
+            wait $!
 
             if ! is_server_running; then
                 # Server process not found - check if we should restart
