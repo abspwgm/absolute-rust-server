@@ -1,0 +1,24 @@
+#!/bin/bash
+# =============================================================================
+# Run one console command on the running server over WebRCON
+# =============================================================================
+#   docker exec rust-server /opt/rust/scripts/rust-rcon serverinfo
+#   docker exec rust-server /opt/rust/scripts/rust-rcon playerlist
+#
+# Logs in with the server's own RCON password (RCON_PASSWORD, or the one this
+# image generated into /config/rcon_password), sends the command and prints the
+# reply. Exits 1 if WebRCON is disabled or unreachable, the password is refused,
+# or no reply arrives in time. The password is never printed.
+
+source "${RUST_SCRIPTS_PATH:-/opt/rust/scripts}/common"
+
+if [[ $# -lt 1 ]]; then
+    echo "Usage: $0 <console command> [timeout seconds]" >&2
+    exit 2
+fi
+
+if ! reply="$(rcon_command "$1" "${2:-15}")"; then
+    log_error "No reply to '$1' over WebRCON (disabled, unreachable, refused, or timed out)" >&2
+    exit 1
+fi
+printf '%s\n' "${reply}"

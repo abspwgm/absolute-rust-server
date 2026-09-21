@@ -63,6 +63,112 @@ cleanup() {
 trap cleanup EXIT
 
 # -----------------------------------------------------------------------------
+# The ready ladder (standard 2.10)
+# -----------------------------------------------------------------------------
+# A rung passes only when every test that proves it ran and passed. The verdict
+# is the highest rung reached with every rung below it passed too, so a server
+# that saves perfectly but cannot be found is "degraded at reachable", not
+# "ready". verdict.json is what the fleet board reads; it never claims more.
+LADDER=(up reachable discoverable authenticated recoverable)
+declare -A RUNG_TESTS=(
+    [up]="server_start steam_init"
+    [reachable]="server_query"
+    [discoverable]="discoverable"
+    [authenticated]="rcon_default authenticated"
+    [recoverable]="backup graceful_shutdown restart_update"
+)
+# A rung proven by a stand-in says so (2.10).
+AUTHENTICATED_STAND_IN="WebRCON admin session (serverinfo); not a player join"
+declare -A TEST_RESULT=()
+VERDICT_FILE="${LOGS_DIR}/verdict.json"
+
+# What the run needs from its environment rather than from the image. When one
+# is missing the run is inconclusive, not failed (2.11): a runner that cannot
+# reach Steam says nothing about whether the server works.
+check_preconditions() {
+    if ! docker info >/dev/null 2>&1; then
+        echo "the Docker daemon is not reachable"
+        return 1
+    fi
+    if command -v curl >/dev/null 2>&1 \
+        && ! curl -sf -m 20 -o /dev/null https://api.steampowered.com/ISteamWebAPIUtil/GetServerInfo/v1/; then
+        echo "Steam's web API is unreachable from the runner"
+        return 1
+    fi
+    local free_kb
+    free_kb="$(df -Pk "${PROJECT_DIR}" | awk 'NR == 2 {print $4}')"
+    if [[ "${free_kb}" =~ ^[0-9]+$ ]] && (( free_kb < 12 * 1024 * 1024 )); then
+        echo "the runner has under 12 GB free for a 6 GB install"
+        return 1
+    fi
+    return 0
+}
+
+rung_status() {
+    local test status="pass"
+    for test in ${RUNG_TESTS[$1]}; do
+        case "${TEST_RESULT[${test}]:-not_run}" in
+            pass) ;;
+            fail) echo "fail"; return ;;
+            *) status="not_run" ;;
+        esac
+    done
+    echo "${status}"
+}
+
+# write_verdict <verdict> [reason] ; verdict.json, plus a job summary in CI.
+# Written before the cleanup trap removes the container, which holds the one
+# fact the verdict must carry: which Steam build was actually tested.
+write_verdict() {
+    local verdict="$1" reason="${2:-}" reached="null" rung status rungs="" build
+    for rung in "${LADDER[@]}"; do
+        status="$(rung_status "${rung}")"
+        rungs+="${rungs:+, }\"${rung}\": \"${status}\""
+    done
+    if [[ "${verdict}" != "inconclusive" ]]; then
+        for rung in "${LADDER[@]}"; do
+            [[ "$(rung_status "${rung}")" == "pass" ]] || break
+            reached="\"${rung}\""
+        done
+    fi
+    build="$(docker exec rust-server sed -n 's/.*"buildid"[[:space:]]*"\([0-9]*\)".*/\1/p' \
+        /opt/rust/server/steamapps/appmanifest_258550.acf 2>/dev/null | head -1)" || true
+    local build_json="null"
+    [[ "${build}" =~ ^[0-9]+$ ]] && build_json="\"${build}\""
+    reason="${reason//\\/\\\\}"
+    reason="${reason//\"/\\\"}"
+    cat > "${VERDICT_FILE}" <<EOF
+{
+  "schema": 1,
+  "game": "rust",
+  "verdict": "${verdict}",
+  "reason": "${reason}",
+  "reached": ${reached},
+  "rungs": {${rungs}},
+  "stand_ins": {"authenticated": "${AUTHENTICATED_STAND_IN}"},
+  "steam_build": ${build_json},
+  "commit": "${GITHUB_SHA:-$(git -C "${PROJECT_DIR}" rev-parse HEAD 2>/dev/null)}",
+  "event": "${GITHUB_EVENT_NAME:-local}",
+  "finished_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+    log_to_master "Verdict: ${verdict}${reason:+ (${reason})}; reached ${reached//\"/}; build ${build:-unknown}"
+    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+        {
+            echo "### Ready ladder: **${verdict}**${reason:+ — ${reason}}"
+            echo ""
+            echo "| Rung | Result |"
+            echo "|---|---|"
+            for rung in "${LADDER[@]}"; do
+                echo "| ${rung} | $(rung_status "${rung}") |"
+            done
+            echo ""
+            echo "Steam build: ${build:-unknown}. Authenticated rung: ${AUTHENTICATED_STAND_IN}."
+        } >> "${GITHUB_STEP_SUMMARY}"
+    fi
+}
+
+# -----------------------------------------------------------------------------
 # Run a single test
 # -----------------------------------------------------------------------------
 run_test() {
@@ -72,6 +178,7 @@ run_test() {
     if [[ ! -f "${test_script}" ]]; then
         log_warn "Test script not found: ${test_script}"
         TESTS_SKIPPED=$((TESTS_SKIPPED + 1))
+        TEST_RESULT["${test_name}"]="not_run"
         return 0
     fi
 
@@ -92,6 +199,12 @@ run_test() {
     local end_time
     end_time=$(date +%s)
     local duration=$((end_time - start_time))
+
+    if [[ ${exit_code} -eq 0 ]]; then
+        TEST_RESULT["${test_name}"]="pass"
+    else
+        TEST_RESULT["${test_name}"]="fail"
+    fi
 
     if [[ ${exit_code} -eq 0 ]]; then
         log_pass "Test passed: ${test_name} (${duration}s)"
@@ -125,6 +238,15 @@ main() {
     log_to_master "========================================"
     log_to_master "Master log: ${MASTER_LOG}"
 
+    # Before anything is started: a run that cannot test is inconclusive, and
+    # exits 3 so a person reading CI can tell it apart from a failure (1).
+    local missing
+    if ! missing="$(check_preconditions)"; then
+        log_warn "Inconclusive before starting: ${missing}"
+        write_verdict "inconclusive" "${missing}"
+        exit 3
+    fi
+
     # Setup phase
     log_to_master ""
     log_to_master "========================================"
@@ -157,6 +279,8 @@ main() {
         "steam_init"
         "rcon_default"
         "server_query"
+        "discoverable"
+        "authenticated"
         "backup"
         "graceful_shutdown"
         "restart_update"
@@ -191,6 +315,14 @@ main() {
     log_to_master ""
     log_info "Logs saved to: ${LOGS_DIR}/"
     log_info "Master log: ${MASTER_LOG}"
+
+    # Ready means every rung passed: one that failed, or never ran, is not proven.
+    local verdict="ready" rung
+    for rung in "${LADDER[@]}"; do
+        [[ "$(rung_status "${rung}")" == "pass" ]] || verdict="degraded"
+    done
+    [[ "$(rung_status up)" == "pass" ]] || verdict="down"
+    write_verdict "${verdict}"
 
     # Exit with failure if any tests failed
     if [[ ${TESTS_FAILED} -gt 0 ]]; then
