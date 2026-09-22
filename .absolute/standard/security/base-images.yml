@@ -1,0 +1,107 @@
+# The approved base image library.
+#
+# Every Absolute image starts from an entry here. The library exists so that
+# hardening is a property of the platform rather than a thing each game repo
+# remembers, and so that "we can't harden this one" is a recorded decision with
+# a reason instead of a silent default.
+#
+# status:
+#   approved   A real workload builds on it and its e2e suite passes. Use it.
+#   candidate  Believed suitable, not yet proven by a passing suite. A project
+#              may not ship on a candidate; it may open a PR that promotes it.
+#   rejected   Tried and found unsuitable. The reason stays here so the next
+#              person does not spend the same day on it.
+#
+# hardened: whether the entry is a hardened or minimised distribution, as
+# opposed to a general purpose one. A project that picks a non-hardened entry
+# while a hardened one is approved for the same workload class must give a
+# functionality reason in its policy.
+#
+# A base is pinned by digest in the Dockerfile, never by tag. The digest lives
+# in the project, not here, so a base image update is a reviewed PR in the
+# project that ships it.
+standard_version: "1.0.0"
+
+workload_classes:
+  steamcmd-native: >-
+    A Linux-native dedicated server installed by SteamCMD. Needs glibc, a
+    package manager at build time, and 32-bit runtime libraries, because
+    SteamCMD itself is a 32-bit binary.
+  steamcmd-wine: >-
+    A Windows-only dedicated server run under Wine. Needs everything above plus
+    a full Wine stack and, for some titles, a virtual display.
+  jvm: >-
+    A Java server. Needs a JRE and nothing else from the distribution.
+  tooling: >-
+    Build, test and compliance tooling. Never ships to a user.
+
+images:
+  debian-bookworm-slim:
+    image: debian
+    tag_family: bookworm-slim
+    hardened: false
+    status: approved
+    workload_classes: [steamcmd-native, steamcmd-wine]
+    rationale: >-
+      The current base for every shipped image. SteamCMD needs glibc and 32-bit
+      multiarch, which rules out most minimal distributions; Debian slim is the
+      smallest general-purpose base that supports both, and its security
+      updates are predictable.
+    hardening_applied:
+      - No package manager use at run time; build stages install, the final
+        stage does not
+      - No build toolchain in the final image
+      - Unprivileged user created in the image
+    verified_by: https://github.com/abspwgm/absolute-valheim-server/actions/workflows/e2e.yml
+    notes: >-
+      Not a hardened distribution. It is approved because nothing hardened has
+      yet been proven to run SteamCMD's 32-bit loader; see the candidates.
+
+  ubuntu-noble:
+    image: ubuntu
+    tag_family: "24.04"
+    hardened: false
+    status: candidate
+    workload_classes: [steamcmd-native, steamcmd-wine]
+    rationale: >-
+      Some publishers test their Linux server only on Ubuntu, and a few titles
+      have reported startup problems on other distributions.
+    notes: >-
+      Only for a title that demonstrably needs it, and only once its e2e suite
+      passes here. Prefer Debian slim otherwise.
+
+  chainguard-wolfi-base:
+    image: cgr.dev/chainguard/wolfi-base
+    hardened: true
+    status: candidate
+    workload_classes: [tooling]
+    rationale: >-
+      Minimal, glibc-based, rebuilt continuously, and ships with few enough
+      packages that most CVE reports do not apply. The obvious candidate for
+      tooling images.
+    unverified:
+      - Whether SteamCMD's 32-bit loader can be satisfied here at all
+      - Whether the free tier's tag policy is compatible with pinning by digest
+        for as long as we support a release
+    notes: >-
+      Do not use for a game image until the 32-bit question is answered by a
+      passing suite, not by reasoning.
+
+  distroless-base:
+    image: gcr.io/distroless/base-debian12
+    hardened: true
+    status: rejected
+    workload_classes: [steamcmd-native, steamcmd-wine]
+    rationale: >-
+      Hardened and minimal, and the usual first suggestion.
+    rejected_because: >-
+      No shell and no package manager at run time. Every one of our images
+      installs the game at first start, supervises processes, and hands the
+      operator a recovery CLI. All three need a shell. It remains a reasonable
+      target for a future compiled tool, not for a game server.
+
+# Promoting a candidate to approved:
+#   1. Build a real game image on it and run that game's full e2e suite.
+#   2. Record the passing run as `verified_by` on the entry.
+#   3. Open a PR here with both, and with what changed in the Dockerfile.
+# A base is never promoted on reasoning alone.
