@@ -1,0 +1,13 @@
+# Every link here is public, because this repository can be (STANDARD.md 8.2):
+# no link points into a private repository, the hub included.
+blank_issues_enabled: false
+contact_links:
+  - name: Help running a server, and asking for a new game
+    url: https://discord.gg/ufC2RFxxkx
+    about: Setup and port forwarding questions, and where a request for a game we do not run yet starts.
+  - name: Security vulnerability
+    url: https://github.com/abspwgm/absolute-rust-server/security/advisories/new
+    about: Never file a security problem as a public issue — report it privately.
+  - name: Which games are supported
+    url: https://abspwgm.github.io/absolute-game-servers/
+    about: The fleet board shows what is live, at parity, planned or blocked.
