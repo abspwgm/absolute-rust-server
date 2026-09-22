@@ -1,0 +1,47 @@
+# =============================================================================
+# Absolute Rust Server - conformance with the Absolute engineering standard
+# =============================================================================
+# The standard lives in a private repository, and a public repository cannot
+# call a reusable workflow from a private one. So this repository carries its
+# own copy of the checker and the policy data it reads, under
+# .absolute/standard/ - see the PROVENANCE.md there.
+# =============================================================================
+
+name: Conformance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    name: Conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the repository under test
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # Clause 6.7: the history scan needs the history. At the default depth
+          # of 1 the check reports NOT CHECKED, which is honest but useless.
+          fetch-depth: 0
+          # On a pull_request event the default ref is refs/pull/N/merge, whose
+          # tip is a merge commit GitHub synthesises at check time. It is not in
+          # the repository's history - a squash merge never produces it - and
+          # scanning it made 6.7 report identities that do not exist in the
+          # history it was describing. Check the head the pull request proposes.
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Install PyYAML
+        run: python3 -m pip install --quiet pyyaml
+
+      - name: Check conformance
+        run: |
+          python3 .absolute/standard/conformance/check.py \
+            --repo . \
+            --standard .absolute/standard

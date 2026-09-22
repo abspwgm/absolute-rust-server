@@ -1,0 +1,356 @@
+# Local policy for absolute-rust-server.
+# Checked on every push against the vendored copy in .absolute/standard/.
+project: absolute-rust-server
+standard_version: "1.0.0"
+
+audience: >-
+  someone who has never used Docker, a terminal or a router's settings page, and
+  wants a Rust server their friends can join tonight
+
+contract:
+  - The environment variables documented in the README and docs/INSTALL.md
+  - The published tags on docker.io/abspwgm/absolute-rust-server - latest,
+    <semver>, sha-<short sha> - promoted by digest from ghcr.io, which is
+    private and for testing only
+  - The volume layout /config and /opt/rust/server
+  - The generated RCON password at /config/rcon_password, mode 600
+  - The port split in docs/INSTALL.md - 28015/udp game and 27015/udp query
+    public, 28016/tcp RCON and 28017/tcp WebRCON private
+  - The operator commands documented in the README -
+    /opt/rust/scripts/rust-rcon, rust-backup and oxide-installer
+  - OXIDE_VERSION and OXIDE_SHA256 move together; an Oxide archive that does
+    not match its pin is refused
+
+tiers:
+  fast:
+    gates: push
+    command: >-
+      shellcheck -S error -s bash -x scripts/* tests/*.sh tests/e2e/*.sh &&
+      for t in tests/test_*.sh; do case "$(basename "${t}")" in
+      test_helpers.sh) continue ;; esac; bash "${t}" || exit 1; done
+    budget: under a minute
+  merge:
+    gates: merge
+    command: bash tests/run_e2e.sh
+    budget: >-
+      up to 90 minutes, nearly all of it the 10 GB Steam download; minutes when
+      the self-hosted pool's depot cache is warm
+  release:
+    gates: release
+    command: bash tests/run_e2e.sh
+    budget: as long as it takes
+
+ready_ladder:
+  up: server_start, steam_init - the server process starts and Steam initialises
+  reachable: server_query - the game and query ports are bound
+  discoverable: >-
+    discoverable - the server answers A2S_INFO through the published query port
+    with the configured name, the rust folder and the right slot count, which is
+    the question a player's Steam server browser asks. Unlike Palworld, Rust is
+    on Steam's browser, so this rung is really run rather than deferred.
+  authenticated: >-
+    rcon_default, authenticated - a stand-in, named as one: an admin session
+    over WebRCON with the server's own generated password, reading the server's
+    name, slots and live player count back. No headless Rust client exists, and
+    scripting the real client against EasyAntiCheat is neither possible nor
+    honest, so nothing here proves a player joined.
+  recoverable: backup, graceful_shutdown, restart_update
+
+# There is deliberately no `build.base_images:` block here yet.
+#
+# Declaring one asserts that the Dockerfile pins every external base by digest
+# (clause 3.1), and it does not: the first stage is `FROM debian:bookworm-slim`,
+# by tag. debian-bookworm-slim is an `approved` entry in
+# .absolute/standard/security/base-images.yml and it is the right base for this
+# workload, so L3.base_image_from_approved_library below is met; what is missing
+# is the digest. That gap is recorded as the `unpinned-base-image` exception on
+# L2.inputs_pinned_immutably, and this block lands in the same pull request that
+# adds the digest, so the check starts enforcing it from then on.
+
+security:
+  layers:
+    L1:
+      requirements:
+        default_branch_protected:
+          status: met
+          verified_by: https://github.com/abspwgm/absolute-game-servers/blob/main/governance/rulesets/default-branch.json
+          reason: >-
+            Applied to this repository as the active `default-branch` branch
+            ruleset from the governance definitions in the hub repository.
+        required_checks_declared:
+          status: met
+          verified_by: https://github.com/abspwgm/absolute-game-servers/blob/main/governance/required-checks.json
+          reason: >-
+            The required check list is declared with the rulesets in the hub
+            repository. This repository matches the `^absolute-.+-server$`
+            pattern there, so Lint (shellcheck), Build Verification and
+            End-to-End Tests are required before a merge.
+        secret_scanning_enabled:
+          status: met
+          verified_by: https://github.com/abspwgm/absolute-rust-server/settings/security_analysis
+          reason: >-
+            Secret scanning and push protection are repository settings, both
+            enabled on this repository.
+        no_secrets_in_repository: .github/workflows/conformance.yml
+        no_deployment_detail_in_public:
+          status: exception
+          exception: no-security-policy
+        licence_declared: LICENSE
+    L2:
+      requirements:
+        inputs_pinned_immutably:
+          status: exception
+          exception: unpinned-base-image
+        pins_verified_before_use: tests/test_oxide_pin.sh
+        unpinned_input_refused: tests/test_oxide_pin.sh
+        pins_move_by_pr:
+          status: met
+          verified_by: https://github.com/abspwgm/absolute-game-servers/blob/main/governance/rulesets/default-branch.json
+          reason: >-
+            The branch ruleset blocks direct pushes to main, so OXIDE_VERSION
+            and OXIDE_SHA256 in the Dockerfile, and the action SHAs in the
+            workflows, move only through a reviewed pull request.
+        vulnerable_dependencies_block_release:
+          status: exception
+          exception: no-vulnerability-gate
+      controls:
+        - id: oxide-pin-verified-before-extraction
+          description: >-
+            Oxide is a mod loader: arbitrary code that runs next to a live
+            world. scripts/oxide-installer refuses to install unless both
+            OXIDE_VERSION and OXIDE_SHA256 are set, downloads only from the
+            version-pinned release URL, and compares sha256 before a single file
+            is extracted. The test proves all three: a matching archive
+            installs, a tampered one is refused with nothing extracted and the
+            download cleaned up, and an empty pin is refused before anything is
+            downloaded at all.
+          verified_by: tests/test_oxide_pin.sh
+    L3:
+      requirements:
+        base_image_from_approved_library:
+          status: met
+          verified_by: Dockerfile
+          reason: >-
+            Every stage descends from debian:bookworm-slim, which is the
+            `approved` debian-bookworm-slim entry in
+            .absolute/standard/security/base-images.yml for the steamcmd-native
+            workload class. It is not a hardened entry, and nothing hardened is
+            approved for this class, because SteamCMD is a 32-bit binary that
+            needs glibc with multiarch. The missing digest pin is tracked
+            separately as the `unpinned-base-image` exception on L2.
+        least_privilege_tokens: .github/workflows/publish.yml
+        no_secrets_in_build_args: Dockerfile
+        ephemeral_runners:
+          status: exception
+          exception: persistent-self-hosted-runners
+        fork_pr_cannot_publish: .github/workflows/publish.yml
+    L4:
+      requirements:
+        provenance_and_sbom_attached: .github/workflows/publish.yml
+        only_distributable_content:
+          status: exception
+          exception: steamcmd-baked-in
+        published_only_after_merge_tier: .github/workflows/publish.yml
+    L5:
+      requirements:
+        least_privilege_runtime: config/supervisord.conf
+        admin_interfaces_private: docker-compose.yml
+        default_credentials_refused: tests/test_rcon_password.sh
+        fail_closed_on_state_destroying_paths: scripts/rust-updater
+        honest_health_reporting: scripts/healthcheck
+      controls:
+        - id: server-runs-unprivileged
+          description: >-
+            supervisord starts the server as the rust user (uid 1000), not root,
+            and sets HOME so that unprivileged user can read and write its own
+            home - without that the server could not read its Steam SDK copy and
+            crash-looped (#14).
+          verified_by: config/supervisord.conf
+        - id: rcon-password-generated
+          description: >-
+            An empty RCON_PASSWORD, or one on the denylist (changeme, password,
+            your_secure_password, admin, rcon), is replaced by a generated
+            password of at least 24 characters, written under umask 077 and
+            chmod 600 to /config/rcon_password, reused across restarts, and
+            never logged. The test asserts each of those, including that the
+            generated value never appears in the output.
+          verified_by: tests/test_rcon_password.sh
+        - id: rcon-bound-privately
+          description: >-
+            Both shipped compose files' production settings and the README's
+            copy-paste snippet bind RCON (28016) and WebRCON (28017) to
+            127.0.0.1 and label them admin ports; the port table in
+            docs/INSTALL.md tells the operator not to forward them.
+          verified_by: docker-compose.yml
+        - id: update-holds-when-the-player-count-is-unknown
+          description: >-
+            An update stops and restarts the server. When UPDATE_IF_IDLE is on
+            and the player count cannot be read over WebRCON,
+            scripts/rust-updater holds the update rather than assuming nobody is
+            playing, and retries on the next scheduled run. The unit test drives
+            that guard against a stand-in WebRCON endpoint, including the
+            unreadable case, because get_player_count was once a placeholder
+            that always answered 0 and so the guard never held anything.
+          verified_by: tests/test_rcon_command.sh
+        - id: save-is-requested-before-the-server-is-signalled
+          description: >-
+            RustDedicated exits on SIGINT without writing the world, so
+            scripts/rust-server asks for a save over WebRCON first and gives it
+            at most half the shutdown budget, leaving the rest for a clean exit
+            before SIGKILL. The shutdown ladder that makes this work
+            (SHUTDOWN_TIMEOUT 120s < supervisor stopwaitsecs 150s < compose
+            stop_grace_period 180s) is asserted by the test, whose stand-in
+            server models the real one by exiting on SIGINT without saving.
+          verified_by: tests/test_graceful_stop.sh
+        - id: steam-sdk-readable-by-the-server-user
+          description: >-
+            SteamCMD runs as root and leaves steamclient.so under /root at mode
+            700, which the rust user cannot read; Steam init then failed on
+            every start and the server crash-looped every 35 seconds (#14).
+            install_steam_sdk copies it into the server user's home, and the
+            updater refreshes that copy after every SteamCMD run.
+          verified_by: tests/test_steam_sdk.sh
+        - id: the-verdict-never-claims-more-than-was-proven
+          description: >-
+            tests/run_e2e.sh publishes a ready-ladder verdict (standard 2.10) as
+            the highest rung reached with every rung below it passed, so a
+            server that saves perfectly but cannot be found reads as degraded at
+            reachable rather than ready. A rung proven by a stand-in says so in
+            the verdict, and a run whose preconditions were missing - no Docker,
+            no route to Steam, too little disk - is recorded as inconclusive
+            rather than as a pass or a failure.
+          verified_by: tests/run_e2e.sh
+    L6:
+      requirements:
+        snapshot_before_risk:
+          status: exception
+          exception: no-disaster-response
+        hold_on_failed_verification:
+          status: exception
+          exception: no-update-verification
+        restore_rehearsed_in_ci:
+          status: exception
+          exception: no-disaster-response
+        retention_exercised_by_test:
+          status: exception
+          exception: no-backup-retention-test
+    L7:
+      requirements:
+        scheduled_canary:
+          status: exception
+          exception: no-build-watch
+        one_issue_per_failure_class:
+          status: exception
+          exception: no-failure-class-triage
+        security_policy_published:
+          status: exception
+          exception: no-security-policy
+        findings_kept_private:
+          status: exception
+          exception: no-security-policy
+
+exceptions:
+  - id: unpinned-base-image
+    reason: >-
+      The Dockerfile's first stage is `FROM debian:bookworm-slim`, by tag rather
+      than by digest, so the bytes a build starts from can change under us
+      without a commit. Everything else this image takes from outside is pinned:
+      Oxide by version and sha256 (OXIDE_VERSION, OXIDE_SHA256, enforced by
+      scripts/oxide-installer and tests/test_oxide_pin.sh) and every GitHub
+      Action by 40-character commit SHA in .github/workflows/. The fix is one
+      line, plus the `build.base_images:` block this policy deliberately leaves
+      out, and it belongs in a pull request whose end-to-end suite passes on the
+      chosen digest rather than in this governance-only change.
+    expires: "2026-12-31"
+  - id: no-security-policy
+    reason: >-
+      This repository has no SECURITY.md, so there is no published way to report
+      a vulnerability privately, no statement that findings are handled in
+      private before disclosure, and no written rule that deployment detail -
+      host names, addresses, the layout of the machines that run these images -
+      stays out of a public repository. Nothing in the repository enforces those
+      three today, and naming a file that merely happens to exist would be worse
+      than saying so. The sibling repositories carry a SECURITY.md; copying it
+      here and adapting it is the whole fix, and the only reason it is not in
+      this pull request is that this one is governance wiring and nothing else.
+    expires: "2026-12-31"
+  - id: no-backup-retention-test
+    reason: >-
+      scripts/rust-backup does prune - BACKUPS_MAX_AGE by find -mtime, and
+      BACKUPS_MAX_COUNT by removing the oldest archives - but no test exercises
+      either. tests/e2e/test_backup.sh proves only that a forced backup is
+      created and contains server data. So retention is a setting we believe
+      rather than a behaviour we have watched, and a silent failure to prune
+      fills the operator's disk. The fix is a test that writes several backups,
+      ages them, and asserts the oldest ones actually go.
+    expires: "2026-12-31"
+  - id: persistent-self-hosted-runners
+    reason: >-
+      The end-to-end suite runs on the organisation's self-hosted pool (label
+      absolute-e2e), which is not ephemeral: several runner instances share one
+      machine and one Docker daemon, and the workspace outlives the job - see
+      the "Reclaim ownership of the workspace" step in
+      .github/workflows/e2e.yml, which exists precisely because a previous job's
+      root-owned files break the next checkout. Two things limit the blast
+      radius: fork pull requests are routed to a GitHub-hosted ubuntu-latest
+      runner, so untrusted code never reaches our hardware, and the Steam depot
+      cache the pool holds is copied into the workspace, never hardlinked, so a
+      job cannot write through into it. That is containment, not ephemerality.
+      Real isolation means ephemeral runners for the pool, which is fleet work
+      in the hub repository rather than a change to this repository.
+    expires: "2027-03-31"
+  - id: steamcmd-baked-in
+    reason: >-
+      SteamCMD is proprietary and is fetched at build time, so every image
+      redistributes it. It is a known licence-audit item: either the audit
+      clears it or it moves to a first-start download. The game itself is never
+      baked in - SteamCMD fetches it at run time - and neither is Oxide, but no
+      test yet asserts that no game binary is inside a published image.
+    expires: "2027-03-31"
+  - id: no-vulnerability-gate
+    reason: >-
+      Provenance and SBOM attestations are attached at publish
+      (provenance: mode=max, sbom: true in .github/workflows/publish.yml), but
+      nothing scans them, so a known-vulnerable Debian package with a fix
+      available does not block a release. Dependabot security updates are
+      enabled on the repository, which covers what Dependabot can see; it does
+      not see the contents of the built image. The scan lands as a shared
+      compliance workflow rather than a per-game copy.
+    expires: "2027-03-31"
+  - id: no-update-verification
+    reason: >-
+      scripts/rust-updater takes whatever Steam serves. It never asks for the
+      expected build id first, so there is no verification step that could fail
+      closed, and when SteamCMD exits non-zero it still proceeds as long as the
+      server binary exists on disk. A bad or partial update therefore cannot be
+      held or refused; it is simply started. It gains verification with the
+      shared base image and the verified-build feed.
+    expires: "2027-03-31"
+  - id: no-disaster-response
+    reason: >-
+      Backups exist and run on a schedule, but there is no snapshot before a
+      risky operation, no hold, and no rollback: scripts/rust-updater stops the
+      server and updates it without taking a backup first, and nothing in the
+      repository restores one - scripts/rust-backup has no restore path and no
+      test rehearses one. A Steam update that breaks the server cannot be undone
+      the way valheim-dr does it for Valheim. Writing a third copy of that logic
+      here is what the shared base image exists to prevent, so it lands with the
+      base rather than being duplicated now.
+    expires: "2027-03-31"
+  - id: no-build-watch
+    reason: >-
+      Nothing boots this image against today's Steam build on a schedule, so
+      "it still works" has no date on it: the suite runs on pushes and pull
+      requests only, while Rust ships a forced client and server update every
+      month. The build-watch workflow is a shared reusable workflow in the plan
+      rather than a per-game copy.
+    expires: "2027-03-31"
+  - id: no-failure-class-triage
+    reason: >-
+      A failing run leaves logs, a verdict artifact and a red check, and a human
+      has to notice. Nothing opens one issue per failure class and closes it
+      when the class stops failing, so a flake and a real regression look the
+      same from outside and a recurring failure has no single place where it
+      accumulates. This waits on the same shared operations workflow as
+      no-build-watch.
+    expires: "2027-03-31"
