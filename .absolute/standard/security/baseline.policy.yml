@@ -1,0 +1,82 @@
+# The security baseline, in the form the conformance check reads.
+#
+# This file is the floor. A project's .absolute/policy.yml may add controls to
+# any layer and may tighten any requirement; it may never remove a layer, waive
+# a baseline requirement, or redefine one. Prose for every entry is in
+# BASELINE.md — this file exists so the check does not have to read prose.
+standard_version: "1.0.0"
+
+layers:
+  L1:
+    name: Source
+    requires:
+      - default_branch_protected
+      - required_checks_declared
+      - secret_scanning_enabled
+      - no_secrets_in_repository
+      - no_deployment_detail_in_public
+      - licence_declared
+  L2:
+    name: Dependencies
+    requires:
+      - inputs_pinned_immutably
+      - pins_verified_before_use
+      - unpinned_input_refused
+      - pins_move_by_pr
+      - vulnerable_dependencies_block_release
+  L3:
+    name: Build
+    requires:
+      - base_image_from_approved_library
+      - least_privilege_tokens
+      - no_secrets_in_build_args
+      - ephemeral_runners
+      - fork_pr_cannot_publish
+  L4:
+    name: Artifact
+    requires:
+      - provenance_and_sbom_attached
+      - only_distributable_content
+      - published_only_after_merge_tier
+  L5:
+    name: Runtime
+    requires:
+      - least_privilege_runtime
+      - admin_interfaces_private
+      - default_credentials_refused
+      - fail_closed_on_state_destroying_paths
+      - honest_health_reporting
+  L6:
+    name: State and recovery
+    requires:
+      - snapshot_before_risk
+      - hold_on_failed_verification
+      - restore_rehearsed_in_ci
+      - retention_exercised_by_test
+  L7:
+    name: Operations and disclosure
+    requires:
+      - scheduled_canary
+      - one_issue_per_failure_class
+      - security_policy_published
+      - findings_kept_private
+
+# Requirements a project may mark not_applicable, with a reason, because the
+# project genuinely has no such surface. Everything else is unconditional.
+conditionally_applicable:
+  - base_image_from_approved_library  # a project that builds no image
+  - pins_verified_before_use          # a project with no third-party archive to pin
+  - unpinned_input_refused            # ...which therefore has no pin to be missing
+  - vulnerable_dependencies_block_release
+  - provenance_and_sbom_attached      # a project that publishes no artifact
+  - only_distributable_content
+  - published_only_after_merge_tier
+  - admin_interfaces_private          # a project with no admin interface
+  - default_credentials_refused
+  - snapshot_before_risk              # a project that holds no user state
+  - hold_on_failed_verification
+  - restore_rehearsed_in_ci
+  - retention_exercised_by_test
+  - scheduled_canary                  # a project with no external dependency
+  - ephemeral_runners
+  - fork_pr_cannot_publish
