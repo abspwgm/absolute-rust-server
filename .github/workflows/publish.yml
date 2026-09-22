@@ -5,7 +5,7 @@
 #
 #   ghcr.io/abspwgm/<repo>    PRIVATE. Every build that passed E2E on main, for
 #                             us to test. Never linked from a README or a guide.
-#   docker.io/abspwgm/<repo>  PUBLIC. What strangers pull. Only from a public
+#   docker.io/abspowergaming/<repo>  PUBLIC. What strangers pull. Only from a public
 #                             repository, because a public repository is the
 #                             claim that the image works (publication gate).
 #
@@ -33,7 +33,7 @@ concurrency:
 
 env:
   GHCR_IMAGE: ghcr.io/${{ github.repository }}
-  DOCKERHUB_IMAGE: docker.io/abspwgm/${{ github.event.repository.name }}
+  DOCKERHUB_IMAGE: docker.io/abspowergaming/${{ github.event.repository.name }}
 
 jobs:
   ghcr:
