@@ -29,7 +29,7 @@ The image is published to Docker Hub, so there is nothing to clone or build.
    ```yaml
    services:
      rust-server:
-       image: abspwgm/absolute-rust-server:latest
+       image: abspowergaming/absolute-rust-server:latest
        container_name: rust-server
        restart: unless-stopped
        ports:
@@ -74,7 +74,7 @@ docker run -d \
   -v rust-config:/config \
   -e SERVER_NAME="My Rust Server" \
   -e ENABLE_OXIDE=true \
-  abspwgm/absolute-rust-server:latest
+  abspowergaming/absolute-rust-server:latest
 ```
 
 ## Ports
