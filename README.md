@@ -23,13 +23,13 @@ A production-ready Docker image for hosting Rust dedicated servers with optional
 
 ### Using Docker Compose (Recommended)
 
-The image is published to the GitHub Container Registry, so there is nothing to clone or build.
+The image is published to Docker Hub, so there is nothing to clone or build.
 
 1. Create a `docker-compose.yml`:
    ```yaml
    services:
      rust-server:
-       image: ghcr.io/abspwgm/absolute-rust-server:latest
+       image: abspwgm/absolute-rust-server:latest
        container_name: rust-server
        restart: unless-stopped
        ports:
@@ -74,7 +74,7 @@ docker run -d \
   -v rust-config:/config \
   -e SERVER_NAME="My Rust Server" \
   -e ENABLE_OXIDE=true \
-  ghcr.io/abspwgm/absolute-rust-server:latest
+  abspwgm/absolute-rust-server:latest
 ```
 
 ## Ports

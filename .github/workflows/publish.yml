@@ -1,92 +1,98 @@
 # =============================================================================
-# Absolute Rust Server - Docker Publish Workflow
+# Publish: GHCR for testing, Docker Hub for the public
 # =============================================================================
-# Builds and publishes the image to the GitHub Container Registry (ghcr.io)
-# after E2E tests pass on main, on version tags, or on manual dispatch.
+# Two registries, two audiences (absolute-game-servers docs/PLAN.md, "Registries"):
 #
-# Tags produced: latest, <semver>, <major.minor>, <major>, sha-<sha>.
+#   ghcr.io/abspwgm/<repo>    PRIVATE. Every build that passed E2E on main, for
+#                             us to test. Never linked from a README or a guide.
+#   docker.io/abspwgm/<repo>  PUBLIC. What strangers pull. Only from a public
+#                             repository, because a public repository is the
+#                             claim that the image works (publication gate).
+#
+# Docker Hub receives the GHCR image by digest rather than a second build, so
+# the bytes the public pulls are exactly the bytes we published for testing.
 # =============================================================================
 
 name: Publish Docker Image
 
 on:
-  # Trigger after E2E tests complete on main (gated on success below)
   workflow_run:
     workflows: ["E2E Tests"]
-    types:
-      - completed
+    types: [completed]
     branches: [main]
-
-  # Trigger on version tags
   push:
-    tags:
-      - 'v*.*.*'
-
-  # Manual trigger
+    tags: ['v*.*.*']
   workflow_dispatch:
 
-# Least privilege for GITHUB_TOKEN; the publish job widens to packages: write.
 permissions:
   contents: read
 
+concurrency:
+  group: publish-${{ github.repository }}
+  cancel-in-progress: false
+
 env:
-  REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  GHCR_IMAGE: ghcr.io/${{ github.repository }}
+  DOCKERHUB_IMAGE: docker.io/abspwgm/${{ github.event.repository.name }}
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # Build and Publish Docker Image
-  # ---------------------------------------------------------------------------
-  publish:
-    name: Build and Publish
+  ghcr:
+    name: Publish to GHCR (private, testing)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # For workflow_run, only publish if E2E passed
-    if: ${{ github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success' }}
-
+    # workflow_run's `branches: [main]` matches the run's head branch by name,
+    # and a fork pull request from the fork's own `main` has head branch "main"
+    # too. Only an E2E run triggered by a push to this repository publishes;
+    # otherwise a fork could have its code built and pushed with our tokens.
+    if: >-
+      github.event_name != 'workflow_run' || (
+        github.event.workflow_run.conclusion == 'success' &&
+        github.event.workflow_run.event == 'push' &&
+        github.event.workflow_run.head_repository.full_name == github.repository)
     permissions:
       contents: read
       packages: write
-
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      tags: ${{ steps.meta.outputs.tags }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # workflow_run checks out the default branch head; pin to the commit
+          # whose E2E actually passed, so a later push is never published untested.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - name: Login to GitHub Container Registry
+      - name: Log in to GHCR
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Extract metadata for Docker tags
-      - name: Extract metadata
+      - name: Tags
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          images: ${{ env.GHCR_IMAGE }}
           tags: |
-            # Set latest tag for main branch
-            type=raw,value=latest,enable=${{ github.ref == 'refs/heads/main' }}
-            # Version tags (v1.0.0 -> 1.0.0, 1.0, 1)
+            type=raw,value=latest,enable=${{ github.event_name == 'workflow_run' || github.ref == 'refs/heads/main' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
-            # SHA tag for traceability
-            type=sha,prefix=sha-
+            type=sha,prefix=sha-,format=short
 
-      # Build and push
-      - name: Build and push Docker image
+      - name: Build and push
         id: build
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
           context: .
           file: ./Dockerfile
-          push: true
           platforms: linux/amd64
+          push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           provenance: mode=max
@@ -94,17 +100,64 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Output image info
-      - name: Image digest
+  dockerhub:
+    name: Promote to Docker Hub (public)
+    needs: ghcr
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # The publication gate: a private repository's image stays on GHCR.
+    if: ${{ !github.event.repository.private }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      # Fail loudly rather than skip: a public repository whose image silently
+      # never reaches Docker Hub is exactly the defect this workflow replaced.
+      - name: Docker Hub credentials are configured
         env:
-          DIGEST: ${{ steps.build.outputs.digest }}
-          TAGS: ${{ steps.meta.outputs.tags }}
+          USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          echo "## Published Docker Image" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Digest:** \`${DIGEST}\`" >> "$GITHUB_STEP_SUMMARY"
-          echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Tags:**" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
-          echo "${TAGS}" >> "$GITHUB_STEP_SUMMARY"
-          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          if [ -z "${USERNAME}" ] || [ -z "${TOKEN}" ]; then
+            echo "::error::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are not available to this repository. Set them as organization secrets."
+            exit 1
+          fi
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # Same tags as GHCR, same digest. imagetools copies the index, so the
+      # provenance and SBOM attestations travel with it.
+      - name: Copy the GHCR image to Docker Hub by digest
+        env:
+          DIGEST: ${{ needs.ghcr.outputs.digest }}
+          TAGS: ${{ needs.ghcr.outputs.tags }}
+        run: |
+          args=()
+          while IFS= read -r tag; do
+            [ -n "${tag}" ] || continue
+            args+=(--tag "${DOCKERHUB_IMAGE}:${tag##*:}")
+          done <<< "${TAGS}"
+          docker buildx imagetools create "${args[@]}" "${GHCR_IMAGE}@${DIGEST}"
+          {
+            echo "## Published to Docker Hub"
+            echo ""
+            echo "**Digest:** \`${DIGEST}\`"
+            echo ""
+            echo '```'
+            printf '%s\n' "${args[@]}" | grep -v -- '--tag'
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

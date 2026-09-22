@@ -61,7 +61,7 @@ save and quit). On Windows, use Notepad and make sure the name does not end in `
 ```yaml
 services:
   rust-server:
-    image: ghcr.io/abspwgm/absolute-rust-server:latest
+    image: abspwgm/absolute-rust-server:latest
     container_name: rust-server
     restart: unless-stopped
     ports:
@@ -263,7 +263,7 @@ Still stuck? [Open an issue](https://github.com/abspwgm/absolute-rust-server/iss
 ## Words used in this guide
 
 - **Container:** the sealed box Docker runs the server in.
-- **Image:** the download that a container is started from. Ours is `ghcr.io/abspwgm/absolute-rust-server:latest`.
+- **Image:** the download that a container is started from. Ours is `abspwgm/absolute-rust-server:latest`.
 - **Compose file:** `docker-compose.yml`, the one file holding all your server's settings.
 - **Volume:** a folder on your computer that the container saves into, so your world
   survives updates and restarts.
