@@ -125,6 +125,15 @@ security:
             download cleaned up, and an empty pin is refused before anything is
             downloaded at all.
           verified_by: tests/test_oxide_pin.sh
+        - id: pins-are-kept-current
+          description: >-
+            Pinning is half the control; the other half is that a pin moves.
+            The action SHAs and the base image are carried forward by a weekly
+            grouped Dependabot pull request rather than by someone remembering,
+            and the test fails when a kind of dependency appears in the tree
+            that no ecosystem covers. The Oxide pin is deliberately outside
+            Dependabot's reach - it is game-side and moves with its own check.
+          verified_by: tests/test_dependabot.sh
     L3:
       requirements:
         base_image_from_approved_library:
