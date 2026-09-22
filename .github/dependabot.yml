@@ -1,0 +1,51 @@
+# =============================================================================
+# Dependency updates for this repository, and for every game repository
+# generated from it.
+# =============================================================================
+# Every input here is pinned to an immutable ref, which is what L2 of the
+# standard requires and is the right call. It also means nothing moves unless
+# something moves it. A pin with no bot behind it does not stay current: it
+# rots quietly until a CVE or a broken action finds it for us, usually at the
+# worst moment. This file is that bot.
+#
+# tests/unit/test_dependabot.sh fails when a kind of dependency appears in the
+# tree that no ecosystem below covers, so a generated game repository cannot
+# fall out of cover without the fast tier saying so.
+# =============================================================================
+version: 2
+
+updates:
+  # The action SHAs in .github/workflows/*. Grouped deliberately: a week of
+  # action bumps is one review, not six, and six separate PRs against a
+  # required-check ruleset is how a maintainer learns to stop reading them.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/New_York
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: ci
+    labels:
+      - dependencies
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # The digest-pinned base image in the Dockerfile. Not grouped - there is one
+  # image, and its digest moving is worth reading on its own.
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+      timezone: America/New_York
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: build
+    labels:
+      - dependencies
