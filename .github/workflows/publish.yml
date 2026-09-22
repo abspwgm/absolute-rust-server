@@ -3,11 +3,14 @@
 # =============================================================================
 # Two registries, two audiences (absolute-game-servers docs/PLAN.md, "Registries"):
 #
-#   ghcr.io/abspwgm/<repo>    PRIVATE. Every build that passed E2E on main, for
-#                             us to test. Never linked from a README or a guide.
-#   docker.io/abspwgm/<repo>  PUBLIC. What strangers pull. Only from a public
-#                             repository, because a public repository is the
-#                             claim that the image works (publication gate).
+#   ghcr.io/abspwgm/<repo>
+#       PRIVATE. Every build that passed E2E on main, for us to test. Never
+#       linked from a README or a guide.
+#   docker.io/abspowergaming/<repo>
+#       PUBLIC. What strangers pull. Only from a public repository, because a
+#       public repository is the claim that the image works (publication gate).
+#       The Docker Hub organization is abspowergaming, not the GitHub org's
+#       name, so the namespace is spelled out here rather than derived.
 #
 # Docker Hub receives the GHCR image by digest rather than a second build, so
 # the bytes the public pulls are exactly the bytes we published for testing.
@@ -33,7 +36,7 @@ concurrency:
 
 env:
   GHCR_IMAGE: ghcr.io/${{ github.repository }}
-  DOCKERHUB_IMAGE: docker.io/abspwgm/${{ github.event.repository.name }}
+  DOCKERHUB_IMAGE: docker.io/abspowergaming/${{ github.event.repository.name }}
 
 jobs:
   ghcr:
