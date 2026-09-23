@@ -43,7 +43,7 @@ test_server_start() {
         if [[ $(docker inspect -f '{{.State.Running}}' rust-server 2>/dev/null) != "true" ]]; then
             log_error "Container stopped unexpectedly during startup"
             log_error "=== Container Logs ==="
-            docker logs rust-server 2>&1 || true
+            dump_container_logs rust-server 200
             log_error "=== End Container Logs ==="
             return 1
         fi
@@ -58,7 +58,7 @@ test_server_start() {
         if [[ ${elapsed} -ge ${max_binary_wait} ]]; then
             log_error "Server binary not found after ${max_binary_wait}s"
             log_error "=== Container Logs ==="
-            docker logs rust-server 2>&1 || true
+            dump_container_logs rust-server 200
             log_error "=== End Container Logs ==="
             return 1
         fi
@@ -67,7 +67,7 @@ test_server_start() {
         if [[ $((elapsed % 60)) -eq 0 ]] && [[ ${elapsed} -gt 0 ]]; then
             log_info "Still waiting for server binary... (${elapsed}s elapsed)"
             # Show recent log activity
-            docker logs rust-server --tail 5 2>&1 || true
+            dump_container_logs rust-server 5
         fi
 
         sleep 10
@@ -92,7 +92,7 @@ test_server_start() {
         log_error "Server process did not stay up"
         report_supervisor_state "rust-server"
         log_error "=== Container logs ==="
-        docker logs rust-server --tail 100 2>&1 || true
+        dump_container_logs rust-server 100
         log_error "=== End container logs ==="
         export_container_diagnostics rust-server "${LOGS_DIR:-data/logs}/container"
         return 1
