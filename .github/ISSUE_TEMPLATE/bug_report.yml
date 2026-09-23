@@ -1,0 +1,93 @@
+# The game-image set. These repositories keep their own forms because triage
+# here starts from an image digest and a game build number, which the
+# organisation's inherited form does not ask for (STANDARD.md 4.5).
+#
+# A local ISSUE_TEMPLATE/ replaces the inherited set outright rather than adding
+# to it, so this directory is the whole chooser: it carries a bug form, a
+# feature form and the contact panel, not only the parts that differ.
+name: Bug report
+description: The server behaves differently from what the documentation says
+labels: ["type: bug", "status: needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Security problems do not go here. Use **Report a vulnerability** on the
+        Security tab so the report stays private.
+  - type: input
+    id: image
+    attributes:
+      label: Image
+      description: The tag or digest you actually ran. "latest" is not a version — say which digest it resolved to, from `docker image inspect`.
+      placeholder: "v1.4.2, or abspowergaming/valheim@sha256:..."
+    validations:
+      required: true
+  - type: input
+    id: game-build
+    attributes:
+      label: Game build
+      description: The version or build id the server reported at startup. It is in the first few lines of the log.
+      placeholder: "0.220.3, or Steam build 17811679"
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Which part
+      options:
+        - "Starting the server"
+        - "Updating to a new game build"
+        - "Backups, saves or restore"
+        - "Connecting, ports or RCON"
+        - "Mods"
+        - "The image itself (build, size, permissions)"
+        - "Not sure"
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The compose file or the full `docker run` line, with secrets removed. The smallest one that still shows it.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The relevant lines, not the whole file. Remove tokens, passwords, addresses and player names first, and never attach a world save.
+      render: shell
+    validations:
+      required: true
+  - type: input
+    id: runtime
+    attributes:
+      label: Container runtime
+      placeholder: "Docker 27.3, or Podman 5.2"
+    validations:
+      required: true
+  - type: input
+    id: host
+    attributes:
+      label: Host
+      description: OS and version, and the architecture.
+      placeholder: "Ubuntu 24.04, amd64"
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you file
+      options:
+        - label: I checked that this is not already an open issue
+          required: true
+        - label: This report contains no credentials, tokens or personal data, and no world save
+          required: true

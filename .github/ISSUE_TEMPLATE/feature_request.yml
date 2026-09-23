@@ -1,0 +1,38 @@
+name: Feature or change request
+description: Propose something this image should do and does not
+labels: ["type: feature", "status: needs triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Asking for a **different game** rather than a change to this one? The
+        fleet board and the Discord link in the chooser are where that starts.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you were trying to do, and where it stopped. Describe the problem rather than the solution you have in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like instead
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What you tried or considered
+      description: Including the workaround you are using now, if there is one. If an established tool or spec already solves this, name it — we would rather adopt one than build one.
+  - type: dropdown
+    id: scope
+    attributes:
+      label: Does this change a public contract?
+      description: Environment variables, volume paths, published ports, image tags. A rename is a breaking change.
+      options:
+        - "No"
+        - "Yes — it renames or removes something operators depend on"
+        - "Not sure"
+    validations:
+      required: true
