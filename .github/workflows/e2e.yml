@@ -93,6 +93,42 @@ jobs:
       # ---------------------------------------------------------------------
       # Cache Server Files
       # ---------------------------------------------------------------------
+      # The game learns the lab's public address from Steam and prints it: a
+      # Source server's `status` carries it, and every console command's output
+      # reaches the container log. On a public repository this log is public.
+      # So on lab hardware the address is learned first and masked, which makes
+      # GitHub redact every later occurrence in this log; after the suite it is
+      # scrubbed from what is uploaded, and the job fails if the suite printed
+      # it. Learned at run time, never stored: a residential address changes.
+      # A hosted runner's address is GitHub's, and nothing is hidden. Fails
+      # closed: a suite whose log cannot be redacted does not run here.
+      - name: Mask the runner's public address
+        if: ${{ runner.environment == 'self-hosted' }}
+        run: |
+          addresses=""
+          for family in 4 6; do
+            address=""
+            for probe in https://checkip.amazonaws.com https://api64.ipify.org; do
+              address="$(curl -${family} -fsS --max-time 10 "${probe}" 2>/dev/null | tr -d '[:space:]')" && [ -n "${address}" ] && break
+              address=""
+            done
+            case "${family}:${address}" in
+              4:*.*.*.*) ;;
+              6:*:*) ;;
+              *) address="" ;;
+            esac
+            if [ -n "${address}" ]; then
+              echo "::add-mask::${address}"
+              addresses="${addresses:+${addresses} }${address}"
+            fi
+          done
+          case "${addresses}" in
+            *.*.*.*) ;;
+            *) echo "::error::Could not learn this runner's public IPv4 address, so this log cannot be redacted. Refusing to run the suite on lab hardware."; exit 1 ;;
+          esac
+          echo "RUNNER_PUBLIC_ADDRESS=${addresses}" >> "$GITHUB_ENV"
+          echo "The runner's public address is masked for the rest of this job"
+
       - name: Create cache directories
         run: |
           mkdir -p data/server
@@ -181,11 +217,14 @@ jobs:
           # Show what was copied
           docker run --rm -v rust-test-server:/data alpine ls -la /data/ | head -20 || true
 
+      # Through tee, so the scrub below can read what the suite printed; the
+      # exit code stays the suite's. The periodic status dumps the container's
+      # log through the scrubbing helper, never raw.
       - name: Run E2E test suite
         id: e2e-tests
         run: |
-          # Start tests and show periodic status
-          ./tests/run_e2e.sh &
+          mkdir -p test-artifacts
+          ( set -o pipefail; ./tests/run_e2e.sh 2>&1 | tee test-artifacts/suite.log ) &
           TEST_PID=$!
 
           # Monitor and show status every 5 minutes while tests run
@@ -193,7 +232,7 @@ jobs:
             sleep 300
             echo "=== Status check at $(date) ==="
             docker ps -a || true
-            docker logs rust-server --tail 20 2>&1 || true
+            bash -c 'source tests/test_helpers.sh; dump_container_logs rust-server 20'
             echo "=== End status check ==="
           done
 
@@ -213,6 +252,40 @@ jobs:
           docker logs rust-server > test-artifacts/container.log 2>&1 || true
           docker inspect rust-server > test-artifacts/container-inspect.json 2>&1 || true
           cp -r data/logs/* test-artifacts/ 2>/dev/null || true
+
+      # Masking covers this log; it does not cover what is uploaded, and an
+      # artifact of a public repository is downloadable by anyone signed in. So
+      # the address is scrubbed from everything under test-artifacts, and the
+      # job fails if the suite itself printed it: the mask is the net, not the
+      # floor. A test quotes what it asserts, and dumps a container's log
+      # through dump_container_logs, which scrubs. The server's own log will
+      # carry the address - Source servers print it - which is why that file is
+      # scrubbed rather than judged.
+      - name: Scrub the runner's address from the artifacts, and fail if the suite printed it
+        if: ${{ always() && env.RUNNER_PUBLIC_ADDRESS != '' }}
+        run: |
+          printed=0
+          for address in ${RUNNER_PUBLIC_ADDRESS}; do
+            if grep -qF -- "${address}" test-artifacts/suite.log 2>/dev/null; then
+              printed=1
+            fi
+            escaped="$(printf '%s' "${address}" | sed 's/[][\.*^$/]/\\&/g')"
+            find test-artifacts -type f -exec sed -i "s/${escaped}/<runner-public-address>/g" {} +
+          done
+          remaining=0
+          for address in ${RUNNER_PUBLIC_ADDRESS}; do
+            grep -rqF -- "${address}" test-artifacts 2>/dev/null && remaining=1
+          done
+          if [ "${remaining}" = "1" ]; then
+            echo "::error::The scrub left the runner's address in test-artifacts; nothing is uploaded from this run"
+            rm -rf test-artifacts
+            exit 1
+          fi
+          if [ "${printed}" = "1" ]; then
+            echo "::error::The suite printed the runner's public address. This log is masked and the artifact is scrubbed, but a test that prints raw server output is the defect: quote what you assert, and dump a container's log through dump_container_logs."
+            exit 1
+          fi
+          echo "test-artifacts carry no address of ours"
 
       - name: Upload test artifacts
         if: always()

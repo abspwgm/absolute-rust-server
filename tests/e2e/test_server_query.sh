@@ -108,7 +108,7 @@ test_server_query() {
 
     log_error "Server is not listening on expected ports"
     log_error "Expected ports: ${server_port} (game), ${query_port} (query)"
-    docker logs rust-server --tail 50 2>&1 || true
+    dump_container_logs rust-server 50
     report_supervisor_state "rust-server"
     export_container_diagnostics rust-server "${LOGS_DIR:-data/logs}/container"
     log_test_fail "${TEST_NAME}"

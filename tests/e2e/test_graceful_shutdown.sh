@@ -36,9 +36,9 @@ server_output() {
     tmp="$(mktemp -d)"
     docker cp rust-server:/var/log/rust/supervisor-rust.log "${tmp}/" 2>/dev/null || true
     docker cp rust-server:/var/log/rust/rust-server.log "${tmp}/" 2>/dev/null || true
-    cat "${tmp}"/*.log 2>/dev/null || true
+    cat "${tmp}"/*.log 2>/dev/null | scrub_addresses || true
     rm -rf "${tmp}"
-    docker logs rust-server 2>&1
+    docker logs rust-server 2>&1 | scrub_addresses
 }
 
 restart_container_for_following_tests() {
@@ -52,7 +52,7 @@ restart_container_for_following_tests() {
     while [[ "$(docker inspect -f '{{.State.Running}}' rust-server 2>/dev/null)" != "true" ]]; do
         if [[ ${attempts} -ge 30 ]]; then
             log_error "Container failed to restart after the graceful shutdown test"
-            docker logs rust-server 2>&1 | tail -20 || true
+            dump_container_logs rust-server 20
             return 1
         fi
         sleep 2

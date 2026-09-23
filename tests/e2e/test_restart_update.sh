@@ -100,7 +100,7 @@ test_restart_update() {
     fi
 
     log_error "Server process did not start after restart"
-    docker logs rust-server --tail 50 2>&1 || true
+    dump_container_logs rust-server 50
     log_test_fail "${TEST_NAME}"
     return 1
 }

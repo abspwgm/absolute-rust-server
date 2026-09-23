@@ -379,3 +379,31 @@ export_container_diagnostics() {
     report_supervisor_state "${container}" > "${dest}/supervisor-state.log" 2>&1 || true
     log_pass "Diagnostics saved to ${dest}/"
 }
+
+# -----------------------------------------------------------------------------
+# The runner's address stays out of the output
+# -----------------------------------------------------------------------------
+# On lab hardware the workflow learns the runner's public address, masks it in
+# the job log and fails a suite that prints it, because a game learns that
+# address from Steam and prints it, and a public repository's log is public.
+# RUNNER_PUBLIC_ADDRESS holds the address(es) there, space-separated; anywhere
+# else it is empty and nothing is hidden. A test never runs `docker logs`
+# straight into its output: it goes through dump_container_logs.
+
+# scrub_addresses ; a filter replacing every runner address with a placeholder
+scrub_addresses() {
+    local address expr=""
+    for address in ${RUNNER_PUBLIC_ADDRESS:-}; do
+        expr+="s/$(printf '%s' "${address}" | sed 's/[][\.*^$/]/\\&/g')/<runner-public-address>/g;"
+    done
+    if [[ -n "${expr}" ]]; then
+        sed -e "${expr}"
+    else
+        cat
+    fi
+}
+
+# dump_container_logs <container> [lines] ; the container's last lines, scrubbed
+dump_container_logs() {
+    docker logs "$1" --tail "${2:-40}" 2>&1 | scrub_addresses || true
+}
